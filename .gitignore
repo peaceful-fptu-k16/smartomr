@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ML models (large binary files)
+*.pkl
+*.joblib
+*.model
+
+# Output / generated files
+output/
+!output/.gitkeep
+
+# Training data (large dataset)
+training_data/
+
+# Input images (user-specific)
+input/*.jpg
+input/*.jpeg
+input/*.png
+input/*.bmp
+!input/.gitkeep
+
+# Diagnostic / temporary scripts
+_diag*.py
+
+# IDE / editor
+.vscode/
+.idea/
+*.suo
+*.user
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Environment variables
+.env
+.env.local
+
+# Jupyter
+.ipynb_checkpoints/

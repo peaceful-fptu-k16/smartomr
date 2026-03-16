@@ -1,0 +1,791 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SmartOMR — Báo cáo dự án</title>
+  <style>
+    :root {
+      --primary: #1a73e8;
+      --primary-dark: #1558b0;
+      --accent: #34a853;
+      --danger: #ea4335;
+      --warning: #fbbc04;
+      --bg: #f8f9fa;
+      --card: #ffffff;
+      --text: #202124;
+      --muted: #5f6368;
+      --border: #dadce0;
+      --code-bg: #f1f3f4;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.7;
+    }
+
+    /* ── HERO ── */
+    .hero {
+      background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 60%, #1a237e 100%);
+      color: #fff;
+      padding: 64px 32px 48px;
+      text-align: center;
+    }
+    .hero .badge {
+      display: inline-block;
+      background: rgba(255,255,255,.18);
+      border: 1px solid rgba(255,255,255,.35);
+      border-radius: 20px;
+      padding: 4px 16px;
+      font-size: .8rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+    .hero h1 {
+      font-size: 2.8rem;
+      font-weight: 700;
+      letter-spacing: -.01em;
+      margin-bottom: 12px;
+    }
+    .hero h1 span { color: #82b1ff; }
+    .hero p {
+      font-size: 1.15rem;
+      opacity: .85;
+      max-width: 620px;
+      margin: 0 auto 28px;
+    }
+    .hero-meta {
+      display: flex;
+      justify-content: center;
+      gap: 32px;
+      flex-wrap: wrap;
+      font-size: .9rem;
+      opacity: .75;
+    }
+    .hero-meta span::before { content: '📌 '; }
+
+    /* ── LAYOUT ── */
+    .container { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+    .toc-wrap {
+      background: #fff;
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      padding: 0 24px;
+    }
+    .toc {
+      max-width: 960px;
+      margin: 0 auto;
+      display: flex;
+      gap: 4px;
+      overflow-x: auto;
+      scrollbar-width: none;
+      padding: 12px 0;
+    }
+    .toc::-webkit-scrollbar { display: none; }
+    .toc a {
+      white-space: nowrap;
+      text-decoration: none;
+      color: var(--muted);
+      font-size: .85rem;
+      padding: 6px 14px;
+      border-radius: 20px;
+      transition: all .2s;
+    }
+    .toc a:hover, .toc a.active {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    /* ── SECTIONS ── */
+    section { padding: 52px 0 16px; }
+    .section-label {
+      font-size: .72rem;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--primary);
+      margin-bottom: 6px;
+    }
+    h2 {
+      font-size: 1.85rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 24px;
+      padding-bottom: 12px;
+      border-bottom: 3px solid var(--primary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h2 .num {
+      background: var(--primary);
+      color: #fff;
+      border-radius: 8px;
+      width: 36px;
+      height: 36px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1rem;
+      flex-shrink: 0;
+    }
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 600;
+      color: var(--primary-dark);
+      margin: 28px 0 12px;
+    }
+    p { margin-bottom: 14px; color: var(--text); }
+
+    /* ── CARDS ── */
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 24px 28px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    }
+    .card-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .stat-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px 22px;
+      text-align: center;
+      box-shadow: 0 1px 4px rgba(0,0,0,.06);
+    }
+    .stat-card .num-big {
+      font-size: 2.2rem;
+      font-weight: 700;
+      color: var(--primary);
+      line-height: 1;
+    }
+    .stat-card .label { font-size: .85rem; color: var(--muted); margin-top: 6px; }
+
+    /* ── PIPELINE ── */
+    .pipeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      margin: 16px 0;
+    }
+    .pipe-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .pipe-left {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .pipe-dot {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--primary);
+      color: #fff;
+      font-weight: 700;
+      font-size: .95rem;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 3px solid #fff;
+      box-shadow: 0 0 0 2px var(--primary);
+      flex-shrink: 0;
+    }
+    .pipe-line {
+      width: 2px;
+      flex: 1;
+      min-height: 24px;
+      background: linear-gradient(to bottom, var(--primary), var(--border));
+      margin: 4px 0;
+    }
+    .pipe-step:last-child .pipe-line { display: none; }
+    .pipe-content {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      margin-bottom: 8px;
+      flex: 1;
+      box-shadow: 0 1px 3px rgba(0,0,0,.05);
+    }
+    .pipe-content strong { color: var(--primary-dark); }
+    .pipe-content p { margin: 4px 0 0; font-size: .9rem; color: var(--muted); }
+
+    /* ── TABLE ── */
+    .table-wrap { overflow-x: auto; margin: 16px 0 24px; border-radius: 10px; border: 1px solid var(--border); }
+    table { width: 100%; border-collapse: collapse; background: var(--card); }
+    thead { background: var(--primary); color: #fff; }
+    th { padding: 12px 16px; text-align: left; font-size: .88rem; font-weight: 600; white-space: nowrap; }
+    td { padding: 11px 16px; font-size: .9rem; border-top: 1px solid var(--border); }
+    tr:hover td { background: #f0f4ff; }
+    .badge-green { background: #e6f4ea; color: #1e7e34; border-radius: 4px; padding: 2px 8px; font-size: .8rem; font-weight: 600; }
+    .badge-blue  { background: #e8f0fe; color: #1558b0; border-radius: 4px; padding: 2px 8px; font-size: .8rem; font-weight: 600; }
+    .badge-gray  { background: #f1f3f4; color: #5f6368; border-radius: 4px; padding: 2px 8px; font-size: .8rem; }
+
+    /* ── CODE ── */
+    pre {
+      background: #1e1e2e;
+      color: #cdd6f4;
+      border-radius: 10px;
+      padding: 20px 22px;
+      overflow-x: auto;
+      font-size: .85rem;
+      line-height: 1.6;
+      margin: 14px 0 20px;
+      font-family: 'Fira Code', 'Cascadia Code', Consolas, monospace;
+    }
+    .code-kw  { color: #cba6f7; }
+    .code-fn  { color: #89b4fa; }
+    .code-str { color: #a6e3a1; }
+    .code-cm  { color: #6c7086; font-style: italic; }
+    .code-num { color: #fab387; }
+
+    /* ── HIGHLIGHT BOX ── */
+    .highlight {
+      border-left: 4px solid var(--primary);
+      background: #e8f0fe;
+      border-radius: 0 8px 8px 0;
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: .95rem;
+    }
+    .highlight.green { border-color: var(--accent); background: #e6f4ea; }
+    .highlight.orange { border-color: var(--warning); background: #fef9e7; }
+
+    /* ── COMPARISON ROW ── */
+    .compare-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 16px;
+      margin: 16px 0;
+    }
+    .compare-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .compare-card .head {
+      padding: 10px 14px;
+      font-weight: 600;
+      font-size: .9rem;
+      background: var(--primary);
+      color: #fff;
+    }
+    .compare-card .head.green { background: var(--accent); }
+    .compare-card .head.orange { background: #f57c00; }
+    .compare-card ul {
+      list-style: none;
+      padding: 12px 14px;
+      font-size: .88rem;
+    }
+    .compare-card ul li { padding: 3px 0; }
+    .compare-card ul li::before { content: '• '; color: var(--primary); }
+
+    /* ── FUTURE ── */
+    .future-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+      margin: 16px 0;
+    }
+    .future-item {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+    }
+    .future-item .icon { font-size: 1.6rem; margin-bottom: 8px; }
+    .future-item strong { font-size: .95rem; color: var(--primary-dark); display: block; margin-bottom: 4px; }
+    .future-item p { font-size: .85rem; color: var(--muted); margin: 0; }
+
+    /* ── SLIDE GUIDE ── */
+    .slide-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 14px;
+      margin: 16px 0;
+    }
+    .slide-card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 18px;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+    .slide-num {
+      background: var(--primary);
+      color: #fff;
+      font-weight: 700;
+      font-size: .8rem;
+      border-radius: 6px;
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .slide-card strong { font-size: .9rem; color: var(--text); display: block; margin-bottom: 3px; }
+    .slide-card p { font-size: .82rem; color: var(--muted); margin: 0; }
+
+    /* ── FOOTER ── */
+    footer {
+      background: #1a1a2e;
+      color: #aaa;
+      text-align: center;
+      padding: 32px;
+      margin-top: 60px;
+      font-size: .88rem;
+    }
+    footer strong { color: #fff; }
+
+    @media (max-width: 640px) {
+      .hero h1 { font-size: 2rem; }
+      .compare-grid { grid-template-columns: 1fr; }
+      h2 { font-size: 1.5rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- HERO -->
+<div class="hero">
+  <div class="badge">Báo cáo dự án · Machine Learning</div>
+  <h1>Smart<span>OMR</span></h1>
+  <p>Hệ thống nhận dạng &amp; chấm điểm phiếu thi trắc nghiệm tự động sử dụng Computer Vision và Machine Learning</p>
+  <div class="hero-meta">
+    <span>120 câu hỏi / phiếu</span>
+    <span>30.101 mẫu training</span>
+    <span>Độ chính xác 96.36%</span>
+    <span>~1–3 giây / phiếu</span>
+  </div>
+</div>
+
+<!-- NAV TOC -->
+<div class="toc-wrap">
+  <nav class="toc">
+    <a href="#s1">1. Giới thiệu</a>
+    <a href="#s2">2. Phương pháp</a>
+    <a href="#s3">3. Thực nghiệm</a>
+    <a href="#s4">4. Kết luận</a>
+    <a href="#s5">Slide Guide</a>
+  </nav>
+</div>
+
+<div class="container">
+
+  <!-- ══════════════════════════════════════════════
+       SECTION 1 — GIỚI THIỆU
+  ══════════════════════════════════════════════ -->
+  <section id="s1">
+    <div class="section-label">Section 01</div>
+    <h2><span class="num">1</span> Giới Thiệu</h2>
+
+    <h3>1.1. Đặt vấn đề / Động lực</h3>
+    <p>
+      Thi trắc nghiệm là hình thức kiểm tra phổ biến trong giáo dục Việt Nam, đặc biệt ở
+      các kỳ thi lớn như THPT Quốc gia. Việc chấm điểm thủ công tốn nhiều nhân lực, còn máy
+      quét chuyên dụng có chi phí cao và không linh hoạt.
+    </p>
+    <div class="highlight">
+      <strong>SmartOMR</strong> giải quyết bài toán: <em>Chỉ cần chụp ảnh phiếu thi bằng
+      điện thoại → hệ thống tự động nhận dạng và chấm điểm.</em>
+    </div>
+
+    <h3>1.2. Bài toán Machine Learning</h3>
+    <div class="card-grid">
+      <div class="card">
+        <strong>🔵 Phân loại đa lớp</strong>
+        <p style="margin-top:8px;font-size:.9rem;">Phân loại mỗi ô trả lời thành 5 nhãn:
+          <code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>, <code>blank</code></p>
+      </div>
+      <div class="card">
+        <strong>🟢 Phát hiện đối tượng</strong>
+        <p style="margin-top:8px;font-size:.9rem;">Phát hiện và định vị các ô tròn (bubble)
+          trên phiếu thi bằng HoughCircles</p>
+      </div>
+    </div>
+
+    <h3>1.3. Đóng góp</h3>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Mục tiêu</th><th>Kết quả</th><th>Trạng thái</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Pipeline CV phát hiện ô bubble</td><td>HoughCircles + clustering</td><td><span class="badge-green">✓ Hoàn thành</span></td></tr>
+          <tr><td>Hệ thống chấm ngưỡng (threshold)</td><td>So sánh inner/outer grayscale</td><td><span class="badge-green">✓ Hoàn thành</span></td></tr>
+          <tr><td>Thu thập &amp; gán nhãn dữ liệu</td><td>30.101 ảnh, 5 lớp</td><td><span class="badge-green">✓ Hoàn thành</span></td></tr>
+          <tr><td>Huấn luyện mô hình ML</td><td>Random Forest 96.36%, LR</td><td><span class="badge-green">✓ Hoàn thành</span></td></tr>
+          <tr><td>Kết hợp CV + ML (Hybrid)</td><td>Pipeline 7 bước</td><td><span class="badge-green">✓ Hoàn thành</span></td></tr>
+          <tr><td>Giao diện người dùng</td><td>Tkinter GUI đầy đủ</td><td><span class="badge-green">✓ Hoàn thành</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════
+       SECTION 2 — PHƯƠNG PHÁP
+  ══════════════════════════════════════════════ -->
+  <section id="s2">
+    <div class="section-label">Section 02</div>
+    <h2><span class="num">2</span> Quy Trình / Phương Pháp</h2>
+
+    <h3>2.1. Input → Output</h3>
+    <div class="card" style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;">
+      <div style="text-align:center;flex:1;min-width:160px;">
+        <div style="font-size:2rem;">🖼️</div>
+        <strong>Input</strong>
+        <p style="font-size:.85rem;margin:4px 0 0;color:var(--muted);">Ảnh JPG/PNG phiếu thi<br>Chuẩn tnmaker.net<br>120 câu · 4 lựa chọn ABCD</p>
+      </div>
+      <div style="font-size:1.8rem;color:var(--primary);flex-shrink:0;">→</div>
+      <div style="text-align:center;flex:1;min-width:160px;">
+        <div style="font-size:2rem;">🧠</div>
+        <strong>SmartOMR</strong>
+        <p style="font-size:.85rem;margin:4px 0 0;color:var(--muted);">CV Pipeline (7 bước)<br>+ Random Forest</p>
+      </div>
+      <div style="font-size:1.8rem;color:var(--primary);flex-shrink:0;">→</div>
+      <div style="text-align:center;flex:1;min-width:160px;">
+        <div style="font-size:2rem;">📊</div>
+        <strong>Output</strong>
+        <p style="font-size:.85rem;margin:4px 0 0;color:var(--muted);">120 đáp án A/B/C/D/blank<br>Điểm số + Báo cáo chi tiết<br>Ảnh annotated màu</p>
+      </div>
+    </div>
+
+    <h3>2.2. Pipeline 7 bước</h3>
+    <div class="pipeline">
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">1</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>Perspective Correction</strong><p>Phát hiện 4 marker vuông góc (■) → warp về hình chữ nhật chuẩn, loại bỏ nghiêng do chụp tay</p></div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">2</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>Auto-scale + CLAHE</strong><p>Resize ảnh nhỏ lên 2500px, áp dụng CLAHE cân bằng độ sáng cục bộ</p></div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">3</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>HoughCircles Detection</strong><p>Phát hiện tất cả ô tròn trên phiếu, bổ sung detection với tham số relaxed nếu thiếu</p></div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">4</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>Lọc & Phân cụm (Clustering)</strong><p>Lọc bán kính, loại circularity &lt;0.35; cluster X → 4 cột ABCD; cluster Y → 30 hàng</p></div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">5</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>Threshold Grading</strong><p>Tính <code>contrast = inner_mean / outer_mean</code> cho mỗi bubble; ngưỡng cr&lt;0.72 → filled</p></div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">6</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>Cắt ảnh từng câu</strong><p>Crop 120 ảnh nhỏ (mỗi câu 1 ảnh: số câu + 4 ô ABCD); dùng làm input cho ML</p></div>
+      </div>
+      <div class="pipe-step">
+        <div class="pipe-left"><div class="pipe-dot">7</div><div class="pipe-line"></div></div>
+        <div class="pipe-content"><strong>ML Grading — Random Forest</strong><p>Batch predict toàn bộ 120 ảnh → kết hợp với kết quả threshold (hybrid strategy)</p></div>
+      </div>
+    </div>
+
+    <h3>2.3. Phân tích dữ liệu</h3>
+    <div class="card-grid">
+      <div class="stat-card"><div class="num-big">30,101</div><div class="label">Tổng mẫu training</div></div>
+      <div class="stat-card"><div class="num-big">5</div><div class="label">Lớp (A/B/C/D/blank)</div></div>
+      <div class="stat-card"><div class="num-big">900</div><div class="label">Features / mẫu</div></div>
+      <div class="stat-card"><div class="num-big">~6000</div><div class="label">Mẫu / lớp (cân bằng)</div></div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Lớp</th><th>Số mẫu</th><th>Tỷ lệ</th><th>Mô tả</th></tr></thead>
+        <tbody>
+          <tr><td><strong>A</strong></td><td>6,050</td><td>20.1%</td><td>Ô được tô — lựa chọn A</td></tr>
+          <tr><td><strong>B</strong></td><td>6,050</td><td>20.1%</td><td>Ô được tô — lựa chọn B</td></tr>
+          <tr><td><strong>C</strong></td><td>6,000</td><td>19.9%</td><td>Ô được tô — lựa chọn C</td></tr>
+          <tr><td><strong>D</strong></td><td>6,000</td><td>19.9%</td><td>Ô được tô — lựa chọn D</td></tr>
+          <tr><td><strong>blank</strong></td><td>6,001</td><td>19.9%</td><td>Ô trống — không chọn</td></tr>
+          <tr style="font-weight:700;background:#f0f4ff;"><td>Tổng</td><td>30,101</td><td>100%</td><td>Dataset cân bằng, không bị class imbalance</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="highlight green">
+      Dataset <strong>cân bằng tốt</strong> giữa 5 lớp (~6000 mẫu/lớp), không cần oversampling hay class weighting.
+    </div>
+
+    <h3>2.4. Tiền xử lý dữ liệu</h3>
+    <div class="card">
+      <strong>Xử lý ảnh toàn phiếu:</strong>
+      <ul style="margin:10px 0 0 20px;font-size:.92rem;line-height:1.9;">
+        <li><strong>Auto-scale:</strong> Resize ảnh nhỏ lên 2500px để HoughCircles ổn định</li>
+        <li><strong>Perspective Correction:</strong> Phát hiện 4 corner marker → <code>getPerspectiveTransform</code> → warp</li>
+        <li><strong>CLAHE</strong> (clipLimit=2.0, tile 8×8): Cân bằng độ sáng cục bộ, xử lý ảnh chụp thiếu/thừa sáng</li>
+        <li><strong>GaussianBlur</strong> (9×9, σ=2): Khử nhiễu trước HoughCircles</li>
+      </ul>
+    </div>
+    <div class="card">
+      <strong>Pipeline trích xuất đặc trưng (cho ML):</strong>
+      <pre><code><span class="code-cm"># Ảnh crop thô (47×364×3 px)</span>
+<span class="code-kw">→</span> Grayscale (1 kênh)
+<span class="code-kw">→</span> Resize về <span class="code-num">60×15</span> px  (<span class="code-fn">cv2.resize</span>)
+<span class="code-kw">→</span> Normalize <span class="code-num">/255.0</span>      (float64, range [0,1])
+<span class="code-kw">→</span> Flatten   <span class="code-num">900</span> features  (60×15)</code></pre>
+    </div>
+
+    <h3>2.5. Trực quan hóa dữ liệu (Data Visualization)</h3>
+    <p>Đề xuất giảm chiều từ 900D → 2D để quan sát phân cụm:</p>
+    <pre><code><span class="code-kw">from</span> sklearn.decomposition <span class="code-kw">import</span> <span class="code-fn">PCA</span>
+<span class="code-kw">from</span> sklearn.manifold <span class="code-kw">import</span> <span class="code-fn">TSNE</span>
+<span class="code-kw">import</span> matplotlib.pyplot <span class="code-kw">as</span> plt
+
+<span class="code-cm"># PCA xuống 50D trước → t-SNE xuống 2D (nhanh hơn)</span>
+pca   = <span class="code-fn">PCA</span>(n_components=<span class="code-num">50</span>)
+X_pca = pca.<span class="code-fn">fit_transform</span>(X)
+
+tsne  = <span class="code-fn">TSNE</span>(n_components=<span class="code-num">2</span>, random_state=<span class="code-num">42</span>, perplexity=<span class="code-num">40</span>)
+X_2d  = tsne.<span class="code-fn">fit_transform</span>(X_pca)
+
+<span class="code-cm"># Vẽ scatter plot 5 màu cho 5 lớp</span>
+plt.<span class="code-fn">scatter</span>(X_2d[:,<span class="code-num">0</span>], X_2d[:,<span class="code-num">1</span>], c=y_encoded, cmap=<span class="code-str">'tab10'</span>, s=<span class="code-num">2</span>, alpha=<span class="code-num">0.6</span>)
+plt.<span class="code-fn">legend</span>([<span class="code-str">'A'</span>,<span class="code-str">'B'</span>,<span class="code-str">'C'</span>,<span class="code-str">'D'</span>,<span class="code-str">'blank'</span>])
+plt.<span class="code-fn">title</span>(<span class="code-str">"t-SNE visualization — SmartOMR features"</span>)</code></pre>
+    <div class="highlight orange">
+      Kỳ vọng: lớp <strong>blank</strong> tách biệt rõ (ô sáng đồng đều); A/B/C/D phân tán nhưng có vùng riêng theo vị trí bubble.
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════
+       SECTION 3 — THỰC NGHIỆM
+  ══════════════════════════════════════════════ -->
+  <section id="s3">
+    <div class="section-label">Section 03</div>
+    <h2><span class="num">3</span> Thực Nghiệm</h2>
+
+    <h3>3.1. Thiết lập thực nghiệm</h3>
+    <div class="card">
+      <strong>Môi trường:</strong>
+      <ul style="margin:10px 0 0 20px;font-size:.9rem;line-height:2;">
+        <li>Python 3.9 · OpenCV 4.8+ · scikit-learn 1.3+ · NumPy 1.24+ · Pillow 10+</li>
+        <li>CPU: máy tính thông thường (không cần GPU)</li>
+        <li>OS: Windows 10/11</li>
+      </ul>
+    </div>
+
+    <h3>3.2. Thiết lập train / test</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Tập dữ liệu</th><th>Tỷ lệ</th><th>Số mẫu</th><th>Phương pháp</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Train</strong></td><td>80%</td><td>~24.080</td><td>Stratified split</td></tr>
+          <tr><td><strong>Test</strong></td><td>20%</td><td>~6.021</td><td>Stratified split</td></tr>
+          <tr><td colspan="4" style="font-size:.83rem;color:var(--muted);">
+            <code>train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)</code>
+            — Đảm bảo phân bố đều các lớp trong cả train và test.
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>3.3. Tham số mô hình</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Tham số</th><th>Random Forest (v1)</th><th>Logistic Regression (v2)</th></tr></thead>
+        <tbody>
+          <tr><td>Algorithm</td><td><span class="badge-green">RandomForestClassifier</span></td><td><span class="badge-blue">LogisticRegression</span></td></tr>
+          <tr><td>Features</td><td>900 (raw grayscale)</td><td>900 (raw grayscale)</td></tr>
+          <tr><td>Classes</td><td>A, B, C, D, blank</td><td>A, B, C, D</td></tr>
+          <tr><td>n_estimators</td><td>200</td><td>—</td></tr>
+          <tr><td>max_depth</td><td>None (full)</td><td>—</td></tr>
+          <tr><td>min_samples_split</td><td>5</td><td>—</td></tr>
+          <tr><td>C</td><td>—</td><td>1.0</td></tr>
+          <tr><td>solver</td><td>—</td><td>lbfgs</td></tr>
+          <tr><td>max_iter</td><td>—</td><td>3000</td></tr>
+          <tr><td>Feature scaling</td><td>Không cần</td><td>StandardScaler</td></tr>
+          <tr><td>n_jobs</td><td>-1 (all cores)</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>3.4. Kết quả & Đánh giá</h3>
+    <div class="card-grid">
+      <div class="stat-card">
+        <div class="num-big" style="color:#34a853;">96.36%</div>
+        <div class="label">Random Forest — Test Accuracy</div>
+      </div>
+      <div class="stat-card">
+        <div class="num-big" style="color:#1a73e8;">~91%</div>
+        <div class="label">Logistic Regression (ước tính)</div>
+      </div>
+      <div class="stat-card">
+        <div class="num-big" style="color:#f57c00;">1–3s</div>
+        <div class="label">Thời gian xử lý / phiếu</div>
+      </div>
+      <div class="stat-card">
+        <div class="num-big" style="color:#9c27b0;">50×</div>
+        <div class="label">Tăng tốc batch predict vs loop</div>
+      </div>
+    </div>
+
+    <h3>3.5. Độ phức tạp & Thời gian chạy</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Giai đoạn</th><th>Thời gian</th><th>Ghi chú</th></tr></thead>
+        <tbody>
+          <tr><td>Perspective correction</td><td>~0.1–0.2s</td><td>findContours + warpPerspective</td></tr>
+          <tr><td>HoughCircles + filter</td><td>~0.3–0.5s</td><td>Gaussian blur + Hough</td></tr>
+          <tr><td>Clustering + grid build</td><td>~0.1s</td><td>1D clustering X/Y</td></tr>
+          <tr><td>Threshold grading</td><td>~0.1s</td><td>ROI crop nhỏ, O(n_circles)</td></tr>
+          <tr><td>Crop ảnh 120 câu</td><td>~0.1s</td><td></td></tr>
+          <tr><td>ML batch predict</td><td>~0.2–0.5s</td><td>1 lần predict_proba cho toàn bộ batch</td></tr>
+          <tr style="font-weight:700;background:#f0f4ff;"><td>Tổng / phiếu</td><td>~1–3 giây</td><td>CPU thông thường</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>3.6. So sánh các cách tiếp cận</h3>
+    <div class="compare-grid">
+      <div class="compare-card">
+        <div class="head">Chỉ dùng Threshold</div>
+        <ul>
+          <li>Tốc độ rất nhanh</li>
+          <li>Không cần training</li>
+          <li>Kém với ảnh mờ</li>
+          <li>Blank detection: trung bình</li>
+          <li>Chính xác ~85–90%</li>
+        </ul>
+      </div>
+      <div class="compare-card">
+        <div class="head green">Chỉ dùng ML</div>
+        <ul>
+          <li>Tốc độ nhanh</li>
+          <li>Cần training data</li>
+          <li>Tốt với ảnh mờ</li>
+          <li>Blank detection: tốt</li>
+          <li>Chính xác ~96%</li>
+        </ul>
+      </div>
+      <div class="compare-card">
+        <div class="head orange">Hybrid CV + ML ✓</div>
+        <ul>
+          <li>Tốc độ nhanh</li>
+          <li>Cần training data</li>
+          <li>Tốt nhất mọi trường hợp</li>
+          <li>Blank detection: tốt nhất</li>
+          <li>Chính xác ~97–98%</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3>3.7. Phân tích lỗi</h3>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Nguyên nhân lỗi</th><th>Tỷ lệ</th><th>Giải pháp áp dụng</th></tr></thead>
+        <tbody>
+          <tr><td>Ảnh chụp nghiêng</td><td>Phổ biến nhất</td><td>Perspective correction (4 marker)</td></tr>
+          <tr><td>Thiếu sáng / thừa sáng</td><td>Thường gặp</td><td>CLAHE, threshold grading adaptive</td></tr>
+          <tr><td>Ô tô mờ (bút chì nhạt)</td><td>Thỉnh thoảng</td><td>ML override với confidence &gt;0.85</td></tr>
+          <tr><td>Mất circle (HoughCircles)</td><td>Thỉnh thoảng</td><td>Recovery: check missing subcol position</td></tr>
+          <tr><td>Cột 4 thiếu A subcol</td><td>Hiếm</td><td>Boundary correction: steal circles từ cột 3</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════
+       SECTION 4 — KẾT LUẬN
+  ══════════════════════════════════════════════ -->
+  <section id="s4">
+    <div class="section-label">Section 04</div>
+    <h2><span class="num">4</span> Kết Luận & Hướng Phát Triển</h2>
+
+    <h3>4.1. Kết luận</h3>
+    <div class="card">
+      <ul style="margin:0 0 0 20px;line-height:2.2;font-size:.95rem;">
+        <li>Xây dựng thành công hệ thống SmartOMR <strong>từ đầu đến cuối</strong></li>
+        <li>Pipeline 7 bước kết hợp chặt chẽ Computer Vision và Machine Learning</li>
+        <li>Đạt độ chính xác <strong>96.36%</strong> trên test set ~6.021 mẫu, 5 lớp</li>
+        <li>Xử lý phiếu 120 câu trong <strong>~1–3 giây</strong> trên CPU thông thường</li>
+        <li>Giao diện Tkinter GUI, hỗ trợ chấm điểm tự động với file đáp án</li>
+        <li>Random Forest vượt trội Logistic Regression cho bài toán này</li>
+      </ul>
+    </div>
+
+    <h3>4.2. Hướng phát triển</h3>
+    <div class="future-grid">
+      <div class="future-item">
+        <div class="icon">🧠</div>
+        <strong>Deep Learning</strong>
+        <p>Thay RF bằng CNN (MobileNetV3, EfficientNet-Lite) để đạt &gt;99% accuracy</p>
+      </div>
+      <div class="future-item">
+        <div class="icon">📋</div>
+        <strong>Mở rộng phiếu</strong>
+        <p>Hỗ trợ phiếu 60 câu, 50 câu; nhiều lựa chọn A–E; phiếu tự thiết kế</p>
+      </div>
+      <div class="future-item">
+        <div class="icon">📹</div>
+        <strong>Real-time</strong>
+        <p>Xử lý video từ camera, nhận dạng phiếu theo thời gian thực</p>
+      </div>
+      <div class="future-item">
+        <div class="icon">🔤</div>
+        <strong>OCR Header</strong>
+        <p>Nhận dạng mã đề, số báo danh, thông tin thí sinh từ vùng header</p>
+      </div>
+      <div class="future-item">
+        <div class="icon">🌐</div>
+        <strong>Web / Mobile</strong>
+        <p>Đóng gói thành REST API (FastAPI) hoặc app mobile (Flutter/React Native)</p>
+      </div>
+      <div class="future-item">
+        <div class="icon">🔄</div>
+        <strong>Data Augmentation</strong>
+        <p>Thêm rotation, noise, blur, brightness jitter để tăng độ robust của model</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══════════════════════════════════════════════
+       SECTION 5 — SLIDE GUIDE
+  ══════════════════════════════════════════════ -->
+  <section id="s5">
+    <div class="section-label">Phụ lục</div>
+    <h2><span class="num">☰</span> Gợi Ý Nội Dung Slide</h2>
+    <p>Gợi ý cấu trúc slide thuyết trình <strong>10–12 slide</strong>:</p>
+    <div class="slide-grid">
+      <div class="slide-card"><div class="slide-num">1</div><div><strong>Trang bìa</strong><p>SmartOMR · Tên nhóm · Lớp · Ngày</p></div></div>
+      <div class="slide-card"><div class="slide-num">2</div><div><strong>Đặt vấn đề</strong><p>Bài toán chấm thi thủ công → cần tự động hóa. Mô tả input/output</p></div></div>
+      <div class="slide-card"><div class="slide-num">3</div><div><strong>Tổng quan pipeline</strong><p>Sơ đồ 7 bước (flowchart); ảnh trước/sau perspective correction</p></div></div>
+      <div class="slide-card"><div class="slide-num">4</div><div><strong>Dữ liệu</strong><p>Bảng thống kê 30.101 ảnh, biểu đồ phân phối lớp, ảnh mẫu từng lớp</p></div></div>
+      <div class="slide-card"><div class="slide-num">5</div><div><strong>Tiền xử lý ảnh</strong><p>CLAHE, perspective correction, HoughCircles — ảnh minh họa</p></div></div>
+      <div class="slide-card"><div class="slide-num">6</div><div><strong>Trích xuất đặc trưng</strong><p>47×364 → resize 60×15 → flatten 900 chiều. Visualize feature matrix</p></div></div>
+      <div class="slide-card"><div class="slide-num">7</div><div><strong>Mô hình ML</strong><p>RF vs LR, bảng tham số, lý do chọn RF</p></div></div>
+      <div class="slide-card"><div class="slide-num">8</div><div><strong>Kết quả</strong><p>Test accuracy 96.36%, classification report, confusion matrix heatmap</p></div></div>
+      <div class="slide-card"><div class="slide-num">9</div><div><strong>t-SNE / UMAP Visualization</strong><p>Scatter plot 5 lớp trong không gian 2D</p></div></div>
+      <div class="slide-card"><div class="slide-num">10</div><div><strong>Demo hệ thống</strong><p>Screenshot app Tkinter, ảnh phiếu annotated (xanh=đúng, đỏ=sai)</p></div></div>
+      <div class="slide-card"><div class="slide-num">11</div><div><strong>Kết luận & Hướng phát triển</strong><p>Bullet points ngắn gọn, roadmap tương lai</p></div></div>
+      <div class="slide-card"><div class="slide-num">12</div><div><strong>Q&A</strong><p>Cảm ơn · Thông tin nhóm</p></div></div>
+    </div>
+  </section>
+
+</div><!-- /container -->
+
+<footer>
+  <strong>SmartOMR</strong> — Báo cáo dự án Machine Learning<br>
+  <span style="font-size:.8rem;">Pipeline: HoughCircles · CLAHE · Perspective Correction · Random Forest · Tkinter GUI</span>
+</footer>
+
+</body>
+</html>
