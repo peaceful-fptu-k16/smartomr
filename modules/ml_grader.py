@@ -1,16 +1,15 @@
 """
 SmartOMR ML Grader - Module nhận dạng đáp án bằng Machine Learning
-Tích hợp ý tưởng từ MLE501-ORM-Detect (standard folder)
 
 Pipeline:
 1. Nhận ảnh crop 1 câu hỏi (từ SmartOMR crop)
-2. Tiền xử lý: grayscale → BW → xóa đường kẻ → tách vùng đáp án
-3. Resize → 60×15 → flatten thành vector 900 features  
-4. Predict bằng Logistic Regression model
+2. Tiền xử lý: grayscale → resize 60×15 → flatten → 900 features
+3. Predict bằng RandomForest model
 
-Hỗ trợ 2 chế độ:
-- sum_feature: dùng column-sum (60 features) → nhanh, robust hơn
-- pixel_feature: dùng pixel flatten (900 features) → chi tiết hơn
+Chế độ trích xuất đặc trưng:
+- raw: grayscale resize flatten → 900 features (mặc định, tốt nhất)
+- sum: column-sum → 60 features
+- pixel: BW preprocessing (adaptive+global) → 900 features
 """
 
 import cv2
@@ -24,11 +23,20 @@ CHOICE_LABELS = ["A", "B", "C", "D"]
 
 
 # ============================================================
-# TIỀN XỬ LÝ ẢNH (dựa trên MLE501 image_process.py)
+# TIỀN XỬ LÝ ẢNH
 # ============================================================
 
 def convert_to_bw(img, threshold=150):
-    """Chuyển ảnh sang đen trắng (inverted: bubble = trắng)."""
+    """
+    Chuyển ảnh sang đen trắng đảo màu (bubble tô = trắng).
+
+    Args:
+        img: Ảnh đầu vào (BGR hoặc grayscale).
+        threshold: Ngưỡng global threshold. Giá trị càng thấp càng dễ coi là vùng tô.
+
+    Returns:
+        Ảnh nhị phân đã đảo màu (uint8, 0/255).
+    """
     if len(img.shape) == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
@@ -36,6 +44,7 @@ def convert_to_bw(img, threshold=150):
     
     # Dùng adaptive threshold cho ảnh camera phone (chiếu sáng không đều)
     # Kết hợp cả global và adaptive
+    # threshold là tham số chính để điều chỉnh độ nhạy cho ảnh sáng/tối khác nhau.
     _, global_th = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY_INV)
     adaptive_th = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
@@ -48,11 +57,22 @@ def convert_to_bw(img, threshold=150):
 
 
 def remove_vertical_lines(bw_img, ratio=0.60):
-    """Xóa đường kẻ dọc 2 bên (viền ô)."""
+    """
+    Xóa đường kẻ dọc 2 bên dựa trên tổng pixel theo cột.
+
+    Args:
+        bw_img: Ảnh nhị phân (0/255).
+        ratio: Tỉ lệ ngưỡng phát hiện cột "gần như kín" theo chiều cao.
+               Ví dụ 0.60 nghĩa là cột có >= 60% pixel trắng sẽ được xem là đường kẻ.
+
+    Returns:
+        Ảnh đã cắt bỏ viền dọc (nếu phát hiện được).
+    """
     if bw_img.size == 0:
         return bw_img
     
     col_sum = np.sum(bw_img, axis=0)
+    # ratio điều khiển mức nghiêm ngặt khi xác định cột là "đường kẻ".
     threshold = ratio * bw_img.shape[0] * 255
     
     left_line = 0
@@ -74,9 +94,18 @@ def remove_vertical_lines(bw_img, ratio=0.60):
 
 
 def remove_horizontal_lines(bw_img):
-    """Xóa đường kẻ ngang."""
+    """
+    Xóa đường kẻ ngang bằng phép hình thái học (morphological opening).
+
+    Args:
+        bw_img: Ảnh nhị phân (0/255).
+
+    Returns:
+        Ảnh đã loại bỏ thành phần ngang dài.
+    """
     if bw_img.size == 0:
         return bw_img
+    # (30, 1) là tham số quan trọng: càng rộng thì càng xóa mạnh các nét ngang dài.
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (30, 1))
     horizontal = cv2.morphologyEx(bw_img, cv2.MORPH_OPEN, kernel)
     result = bw_img.copy()
@@ -85,7 +114,15 @@ def remove_horizontal_lines(bw_img):
 
 
 def remove_side_margin(bw_img):
-    """Xóa vùng trống 2 bên."""
+    """
+    Cắt bỏ lề trắng 2 bên dựa trên cột có/không có nội dung.
+
+    Args:
+        bw_img: Ảnh nhị phân (0/255).
+
+    Returns:
+        Ảnh đã được crop sát vùng có nội dung.
+    """
     if bw_img.size == 0:
         return bw_img
     col_sum = np.sum(bw_img > 0, axis=0)
@@ -133,7 +170,7 @@ def extract_answer_region(bw_img):
             gap_start = None
             gap_len = 0
     
-    # Chỉ cắt nếu tìm thấy gap đủ lớn (>5px sau resize)
+    # Tham số 5px giúp tránh cắt nhầm các khoảng trống nhỏ do nhiễu.
     if best_gap_start is not None and best_gap_len > 5:
         answer_part = rmv[:, best_gap_start + best_gap_len:]
         answer_part = remove_side_margin(answer_part)
@@ -149,27 +186,30 @@ def extract_features(img, mode="raw"):
     
     Args:
         img: ảnh BGR hoặc grayscale
-        mode: "raw" (900 features, tốt nhất)
-              "sum" (60 features, cũ)
-              "pixel" (900 features, dùng BW preprocessing cũ)
+        mode: "raw"   (900 features, grayscale resize flatten — mặc định)
+              "sum"   (60 features, column-sum)
+              "pixel" (900 features, BW adaptive+global preprocessing)
     
     Returns:
         numpy array shape (1, n_features)
     """
     if mode == "raw":
-        # Raw grayscale resize → flatten → 900 features
-        # Tốt nhất cho training data chuẩn (47×364) và SmartOMR crops
+        # raw là mode mặc định cho omr_model.pkl: giữ nhiều thông tin cường độ sáng.
         if len(img.shape) == 3:
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         else:
             gray = img.copy()
+        # RESIZE_WIDTH/HEIGHT là tham số cố định để đồng bộ số chiều feature khi infer/train.
         resized = cv2.resize(gray, (RESIZE_WIDTH, RESIZE_HEIGHT))
         feature = resized.flatten().astype(np.float64) / 255.0
         return feature.reshape(1, -1)
+
+    if mode not in ("sum", "pixel"):
+        raise ValueError(f"Unsupported feature mode: {mode}. Expected: raw/sum/pixel")
     
-    # Legacy modes (BW preprocessing)
     bw = convert_to_bw(img)
     bw = remove_vertical_lines(bw)
+    
     bw = remove_horizontal_lines(bw)
     answer_region = extract_answer_region(bw)
     
@@ -178,6 +218,7 @@ def extract_features(img, mode="raw"):
             return np.zeros((1, RESIZE_WIDTH))
         return np.zeros((1, RESIZE_WIDTH * RESIZE_HEIGHT))
     
+    # Resize chuẩn hóa kích thước để đảm bảo số feature ổn định giữa các ảnh.
     resized = cv2.resize(answer_region, (RESIZE_WIDTH, RESIZE_HEIGHT))
     normalized = resized / 255.0
     
@@ -196,19 +237,17 @@ def extract_features(img, mode="raw"):
 # ============================================================
 
 class MLGrader:
-    """
-    ML-based grader sử dụng model đã train.
-    Hỗ trợ RandomForest + StandardScaler (best) hoặc LogisticRegression.
-    """
+    """ML-based grader sử dụng RandomForest model đã train."""
     
     def __init__(self, model_path=None, mode="raw"):
         """
         Args:
-            model_path: đường dẫn file .pkl chứa model (dict hoặc model trực tiếp)
-            mode: "raw" (mặc định, tốt nhất) hoặc "sum" / "pixel" (legacy)
+            model_path: đường dẫn file .pkl chứa model (dict format)
+            mode: "raw" (mặc định) hoặc "sum" / "pixel"
         """
         self.model = None
         self.scaler = None
+        # mode điều khiển cách trích xuất feature ở bước predict.
         self.mode = mode
         self.model_path = model_path
         
@@ -216,28 +255,33 @@ class MLGrader:
             self.load_model(model_path)
     
     def load_model(self, path):
-        """Load model từ file pkl. Hỗ trợ cả format cũ và mới."""
+        """
+        Load model từ file .pkl.
+
+        Args:
+            path: Đường dẫn model. Ưu tiên format dict {model, scaler, mode}.
+        """
         with open(path, 'rb') as f:
             data = pickle.load(f)
         
         if isinstance(data, dict):
-            # Format mới: {model, scaler, mode}
             self.model = data['model']
             self.scaler = data.get('scaler', None)
+            # mode lưu trong model có ưu tiên cao hơn mode truyền từ ngoài.
             saved_mode = data.get('mode', self.mode)
             if self.mode != saved_mode:
                 print(f"  [ML] Mode override: {self.mode} -> {saved_mode} (từ model)")
                 self.mode = saved_mode
         else:
-            # Format cũ: model trực tiếp
             self.model = data
         
+        model_type = type(self.model).__name__
         print(f"  [ML] Loaded model: {path}")
-        print(f"  [ML] Classes: {self.model.classes_}")
+        print(f"  [ML] Type: {model_type}, Classes: {self.model.classes_}")
         print(f"  [ML] Mode: {self.mode}, Scaler: {'có' if self.scaler else 'không'}")
     
     def is_ready(self):
-        """Kiểm tra model đã load chưa."""
+        """Kiểm tra model đã được nạp thành công hay chưa."""
         return self.model is not None
     
     def predict_one(self, img):
@@ -253,8 +297,10 @@ class MLGrader:
         if not self.is_ready():
             return None, 0.0
         
+        # self.mode quyết định pipeline feature đang dùng cho ảnh đầu vào.
         feature = extract_features(img, mode=self.mode)
         if self.scaler is not None:
+            # Chỉ scale khi model training có dùng scaler (ví dụ LogisticRegression).
             feature = self.scaler.transform(feature)
         proba = self.model.predict_proba(feature)[0]
         pred_idx = np.argmax(proba)
@@ -277,7 +323,7 @@ class MLGrader:
         if not self.is_ready():
             return {}
         
-        # Chuẩn hóa input thành ordered list
+        # Chuẩn hóa input thành ordered list để giữ thứ tự ổn định khi trả kết quả.
         if isinstance(images, dict):
             keys = sorted(images.keys())
             imgs = [images[k] for k in keys]
@@ -288,7 +334,7 @@ class MLGrader:
         if not imgs:
             return {}
         
-        # Batch feature extraction (vectorized)
+        # Batch feature extraction: trích xuất từng ảnh rồi gom thành ma trận 2D.
         features = []
         for img in imgs:
             feat = extract_features(img, mode=self.mode)  # (1, n_features)
@@ -296,7 +342,7 @@ class MLGrader:
         
         X = np.array(features)  # (N, n_features)
         
-        # Scale nếu có
+        # Scale nếu có để đảm bảo đúng phân phối feature như lúc train.
         if self.scaler is not None:
             X = self.scaler.transform(X)
         
@@ -330,8 +376,12 @@ def prepare_training_data(data_dir, mode="sum"):
             C/
             D/
     
+    Args:
+        data_dir: Thư mục dữ liệu theo lớp (A/B/C/D/blank).
+        mode: Chế độ feature dùng khi build dataset train.
+
     Returns:
-        X (features), y (labels)
+        Tuple (X, y) gồm feature matrix và nhãn.
     """
     X = []
     y = []
@@ -407,7 +457,7 @@ def train_model(data_dir, output_path="models/omr_model.pkl", mode="raw", algori
     print(f"\n  Dataset: {X.shape[0]} samples, {X.shape[1]} features")
     print(f"  Labels: {np.unique(y, return_counts=True)}")
     
-    # Split train/test
+    # Split train/test với stratify để giữ phân phối nhãn ổn định giữa tập train/test.
     if len(X) >= 20:
         X_train, X_test, y_train, y_test = train_test_split(
             X, y, test_size=0.2, random_state=42, stratify=y
@@ -417,13 +467,14 @@ def train_model(data_dir, output_path="models/omr_model.pkl", mode="raw", algori
         X_test, y_test = X, y
         print("  [WARN] Dataset nhỏ, dùng toàn bộ cho cả train và test")
     
-    # StandardScaler
+    # StandardScaler là tham số tiền xử lý bắt buộc cho LogisticRegression.
     scaler = StandardScaler()
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
     
     # Train model
     if algorithm == "rf":
+        # Các tham số RF dưới đây cân bằng giữa độ chính xác và tốc độ suy luận.
         model = RandomForestClassifier(
             n_estimators=200, random_state=42, n_jobs=-1,
             max_depth=None, min_samples_split=5
@@ -433,6 +484,7 @@ def train_model(data_dir, output_path="models/omr_model.pkl", mode="raw", algori
         y_pred = model.predict(X_test)
         train_acc = model.score(X_train, y_train)
     else:
+        # max_iter=3000 giúp LR hội tụ ổn định hơn với dữ liệu ảnh nhiễu.
         model = LogisticRegression(max_iter=3000, C=1.0, solver='lbfgs')
         model.fit(X_train_scaled, y_train)
         y_pred = model.predict(X_test_scaled)
@@ -444,7 +496,7 @@ def train_model(data_dir, output_path="models/omr_model.pkl", mode="raw", algori
     print(f"  Test accuracy:  {acc:.4f}")
     print(f"\n{classification_report(y_test, y_pred)}")
     
-    # Save model + scaler + mode
+    # Lưu kèm mode + scaler để infer không cần cấu hình tay lại.
     save_data = {
         'model': model,
         'scaler': scaler if algorithm == 'lr' else None,
@@ -469,8 +521,8 @@ def organize_training_data(questions_dir, output_dir):
     Training structure: A/Q001_A.jpg, B/Q002_B.jpg, ...
     
     Args:
-        questions_dir: folder chứa ảnh Q*.jpg từ SmartOMR
-        output_dir: folder đích cho training data
+        questions_dir: Folder chứa ảnh Q*.jpg từ SmartOMR.
+        output_dir: Folder đích theo cấu trúc class subfolder.
     """
     import shutil
     
@@ -519,9 +571,9 @@ def generate_synthetic_data(questions_dir, output_dir, n_per_class=30):
     - Tạo ảnh mới với bubble khác được tô đen
     
     Args:
-        questions_dir: folder chứa ảnh Q*.jpg đã crop
-        output_dir: folder đích (A/, B/, C/, D/)
-        n_per_class: số ảnh tối đa mỗi class
+        questions_dir: Folder chứa ảnh Q*.jpg đã crop.
+        output_dir: Folder đích (A/, B/, C/, D/).
+        n_per_class: Số ảnh tối đa sinh ra cho mỗi class để cân bằng dữ liệu.
     """
     import shutil
     
@@ -561,11 +613,13 @@ def generate_synthetic_data(questions_dir, output_dir, n_per_class=30):
         h, w = gray.shape
         
         # Tìm vùng bubbles - chia vùng phải 60% ảnh thành 4 phần
+        # 0.35 là tham số kinh nghiệm: bỏ vùng số câu, chỉ giữ vùng chứa bubble.
         bubble_start = int(w * 0.35)  # Bỏ qua vùng số thứ tự
         bubble_zone = gray[:, bubble_start:]
         bw = bubble_zone.shape[1]
         
         # Chia 4 vùng đều cho A/B/C/D
+        # Chia 4 vùng đều cho A/B/C/D dựa trên layout chuẩn SmartOMR.
         quarter = bw // 4
         regions = []
         for i in range(4):
@@ -600,7 +654,7 @@ def generate_synthetic_data(questions_dir, output_dir, n_per_class=30):
                 else:
                     channel = synth[:, orig_x1:orig_x2].astype(np.float32)
                 
-                # Brighten: scale up towards empty_mean
+                # scale giới hạn 2.0 để tránh làm vỡ chi tiết khi tăng sáng.
                 filled_mean = np.mean(channel)
                 if filled_mean < empty_mean and filled_mean > 10:
                     scale = min(empty_mean / filled_mean, 2.0)
@@ -618,7 +672,7 @@ def generate_synthetic_data(questions_dir, output_dir, n_per_class=30):
                 else:
                     channel = synth[:, target_x1:target_x2].astype(np.float32)
                 
-                # Darken: scale down
+                # 0.3 là tham số làm tối tương đối mạnh để mô phỏng ô được tô.
                 channel = np.clip(channel * 0.3, 0, 255).astype(np.uint8)
                 if len(synth.shape) == 3:
                     synth[:, target_x1:target_x2, c] = channel

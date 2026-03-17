@@ -56,12 +56,19 @@ EMPTY_MEAN_THRESHOLD = 180    # mean > 180 → chắc chắn empty
 CROP_PAD_X = 25
 CROP_PAD_Y = 8
 
-# Auto-scale: resize image to this target width for consistent detection
+# Kích thước chuẩn để tự co giãn ảnh trước khi nhận diện.
 AUTO_SCALE_TARGET_W = 2500
 
 
 class SmartOMR:
-    def __init__(self, debug=False, ml_model_path=None, ml_mode="sum"):
+    def __init__(self, debug=False, ml_model_path=None, ml_mode="raw"):
+        """Khởi tạo bộ xử lý OMR.
+
+        Args:
+            debug: Bật log chi tiết khi xử lý.
+            ml_model_path: Đường dẫn model ML (.pkl), có thể None.
+            ml_mode: Chế độ feature cho ML grader (raw/sum/pixel).
+        """
         self.debug = debug
         self.ml_grader = None
         self._gray_clahe_cache = None
@@ -72,6 +79,7 @@ class SmartOMR:
                 self.ml_grader = None
 
     def process(self, image_path):
+        """Xử lý 1 ảnh phiếu và trả về đáp án + ảnh annotate + thống kê."""
         print(f"\n{'='*60}")
         print(f"  SmartOMR v3")
         print(f"  Ảnh: {image_path}")
@@ -83,7 +91,7 @@ class SmartOMR:
             print(f"[ERROR] Không đọc được: {image_path}")
             return None
 
-        # Auto-scale: resize small images for consistent HoughCircles detection
+        # Tự co giãn ảnh đầu vào để ổn định bước HoughCircles.
         h_orig, w_orig = image.shape[:2]
         self._scale_factor = 1.0
         if w_orig < AUTO_SCALE_TARGET_W * 0.75:
@@ -97,7 +105,7 @@ class SmartOMR:
         h, w = gray.shape
         print(f"  Kích thước: {w}x{h}")
 
-        # Perspective correction: detect corner markers and warp
+        # Hiệu chỉnh phối cảnh dựa trên marker 4 góc.
         warped = self._perspective_correct(image, gray)
         if warped is not None:
             image = warped
@@ -105,7 +113,7 @@ class SmartOMR:
             h, w = gray.shape
             print(f"  Perspective corrected: {w}x{h}")
 
-        # Auto-scale AFTER perspective correction to ~2500px (both up and down)
+        # Co giãn lại sau warp về kích thước chuẩn để pipeline ổn định.
         h_cur, w_cur = image.shape[:2]
         if w_cur < AUTO_SCALE_TARGET_W * 0.90 or w_cur > AUTO_SCALE_TARGET_W * 1.10:
             scale = AUTO_SCALE_TARGET_W / w_cur
@@ -118,7 +126,7 @@ class SmartOMR:
             self._scale_factor *= scale
             print(f"  Post-warp scale: {w_cur}x{h_cur} -> {new_w}x{new_h} (x{scale:.2f})")
 
-        # CLAHE-enhanced gray (cache dùng chung cho _detect_circles & _remove_header_rows)
+        # CLAHE tăng tương phản; cache để tái sử dụng ở nhiều bước.
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self._gray_clahe_cache = clahe.apply(gray)
 
@@ -202,22 +210,22 @@ class SmartOMR:
         }
 
     # ===================================================================
-    # PERSPECTIVE CORRECTION using corner markers
+    # HIỆU CHỈNH PHỐI CẢNH DỰA TRÊN MARKER GÓC
     # ===================================================================
     def _perspective_correct(self, image, gray):
-        """
-        Detect 4 corner markers (■) of the answer grid and apply
-        perspective warp to produce a standardized rectangle.
-        Returns warped image, or None if markers not found.
+        """Phát hiện marker 4 góc và warp ảnh về khung chuẩn.
+
+        Trả về:
+            Ảnh đã warp hoặc None nếu không đủ điều kiện.
         """
         h, w = gray.shape
         
-        # Adaptive threshold for marker detection
+        # Adaptive threshold để tìm marker ổn định trên ảnh ánh sáng không đều.
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                         cv2.THRESH_BINARY_INV, 21, 10)
         contours, _ = cv2.findContours(thresh, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         
-        # Filter for square-ish dark markers
+        # Lọc marker dạng vuông/tối (gần giống ký hiệu góc của form).
         min_side = w * 0.008
         max_side = w * 0.04
         min_area = min_side ** 2
@@ -240,16 +248,16 @@ class SmartOMR:
         if len(markers) < 3:
             return None
         
-        # Cluster nearby markers (same marker detected at multiple scales)
+        # Gom marker gần nhau (tránh trùng một marker do detect nhiều lần).
         clustered = self._cluster_markers(markers)
         
         if len(clustered) < 3:
             return None
         
-        # Find 4 corner markers: the ones closest to image corners
+        # Tìm 4 marker góc tốt nhất.
         corners = self._find_corner_markers(clustered, w, h)
         
-        # If 4 corners not found, try 3-corner estimation (parallelogram)
+        # Nếu thiếu 1 góc thì ước lượng từ 3 góc (quy tắc hình bình hành).
         if corners is None and len(clustered) >= 3:
             corners = self._estimate_4th_corner(clustered, w, h)
         
@@ -258,17 +266,17 @@ class SmartOMR:
         
         tl, tr, bl, br = corners
         
-        # Verify the quadrilateral makes sense
+        # Kiểm tra tứ giác hợp lệ trước khi warp.
         quad_w = max(np.linalg.norm(np.array(tr) - np.array(tl)),
                      np.linalg.norm(np.array(br) - np.array(bl)))
         quad_h = max(np.linalg.norm(np.array(bl) - np.array(tl)),
                      np.linalg.norm(np.array(br) - np.array(tr)))
         
-        # Quadrilateral should be reasonably sized (at least 40% of image)
+        # Tứ giác phải đủ lớn để tránh warp nhầm vùng nhiễu.
         if quad_w < w * 0.35 or quad_h < h * 0.35:
             return None
         
-        # Destination: standard rectangle with some padding
+        # Khung đích chuẩn, có padding để không cắt sát mép.
         pad = 20
         dst_w = int(quad_w) + 2 * pad
         dst_h = int(quad_h) + 2 * pad
@@ -294,8 +302,13 @@ class SmartOMR:
         return warped
     
     def _cluster_markers(self, markers, dist_threshold=30):
-        """Merge markers that are very close (same marker detected at different scales)."""
-        markers = sorted(markers, key=lambda m: m[2], reverse=True)  # sort by area, largest first
+        """Gộp các marker quá gần nhau thành 1 marker đại diện.
+
+        Args:
+            markers: Danh sách marker (cx, cy, area).
+            dist_threshold: Ngưỡng khoảng cách để coi là trùng marker.
+        """
+        markers = sorted(markers, key=lambda m: m[2], reverse=True)  # ưu tiên marker có area lớn
         used = [False] * len(markers)
         clustered = []
         
@@ -303,7 +316,7 @@ class SmartOMR:
             if used[i]:
                 continue
             used[i] = True 
-            # Mark nearby markers as used
+            # Đánh dấu marker lân cận là đã dùng.
             for j in range(i + 1, len(markers)):
                 if not used[j]:
                     dx = abs(markers[j][0] - cx)
@@ -315,19 +328,18 @@ class SmartOMR:
         return clustered
     
     def _find_corner_markers(self, markers, img_w, img_h):
+        """Chọn 4 marker tạo thành góc của vùng làm bài.
+
+        Chiến lược: lấy các marker lớn nhất, thử tổ hợp 4 điểm và chấm điểm
+        theo độ "hình chữ nhật" + diện tích.
         """
-        From a list of clustered markers, find the 4 that form the 
-        corners of the answer grid area.
-        Strategy: corner markers are typically the largest. Take the top 
-        candidates by area and pick the 4 forming the best rectangle.
-        """
-        # Sort by area descending (corner markers are the largest on the sheet)
+        # Marker góc thường có diện tích lớn nhất trên phiếu.
         markers_sorted = sorted(markers, key=lambda m: m[2], reverse=True)
         
-        # Take top candidates (at most 10)
+        # Chỉ lấy top candidate để giảm độ phức tạp tổ hợp.
         candidates = markers_sorted[:min(10, len(markers_sorted))]
         
-        # Try subsets starting from the 4 largest, expanding if needed
+        # Thử các tổ hợp 4 điểm và chọn tổ hợp có score tốt nhất.
         from itertools import combinations
         
         best_score = -1
@@ -344,13 +356,13 @@ class SmartOMR:
             if len({tl, tr, br, bl}) < 4:
                 continue
             
-            # Check: top pair should have similar y, bottom pair similar y
+            # Cặp trên và cặp dưới cần có Y gần nhau.
             top_dy = abs(tl[1] - tr[1])
             bot_dy = abs(bl[1] - br[1])
             if top_dy > img_h * 0.15 or bot_dy > img_h * 0.15:
                 continue
             
-            # Width/height should be reasonable
+            # Kích thước khung phải hợp lý.
             w1 = np.linalg.norm(np.array(tr) - np.array(tl))
             w2 = np.linalg.norm(np.array(br) - np.array(bl))
             h1 = np.linalg.norm(np.array(bl) - np.array(tl))
@@ -359,16 +371,16 @@ class SmartOMR:
             if min(w1, w2) < img_w * 0.3 or min(h1, h2) < img_h * 0.3:
                 continue
             
-            # Score: prefer larger area + more rectangular (parallel sides)
+            # Score ưu tiên: diện tích lớn + hình chữ nhật rõ.
             area = 0.5 * abs(
                 (tr[0] - tl[0]) * (br[1] - tl[1]) - (br[0] - tl[0]) * (tr[1] - tl[1]) +
                 (br[0] - tr[0]) * (bl[1] - tr[1]) - (bl[0] - tr[0]) * (br[1] - tr[1])
             )
             w_ratio = min(w1, w2) / max(w1, w2) if max(w1, w2) > 0 else 0
             h_ratio = min(h1, h2) / max(h1, h2) if max(h1, h2) > 0 else 0
-            rectangularity = w_ratio * h_ratio  # closer to 1 = more rectangular
+            rectangularity = w_ratio * h_ratio  # càng gần 1 càng vuông vức
             
-            # Also prefer combos with larger markers (sum of areas)
+            # Ưu tiên thêm các combo có marker lớn.
             area_sum = sum(candidates[i][2] for i in combo)
             
             score = area * rectangularity * area_sum
@@ -380,10 +392,7 @@ class SmartOMR:
         return best_corners
 
     def _estimate_4th_corner(self, markers, img_w, img_h):
-        """
-        When only 3 corner markers are found, estimate the missing 4th
-        using parallelogram properties: missing = p1 + p3 - p2 (diagonally opposite).
-        """
+        """Ước lượng góc thứ 4 khi chỉ tìm được 3 marker góc."""
         from itertools import combinations
         
         markers_sorted = sorted(markers, key=lambda m: m[2], reverse=True)
@@ -395,10 +404,9 @@ class SmartOMR:
         for combo in combinations(range(len(candidates)), 3):
             pts = [(candidates[i][0], candidates[i][1]) for i in combo]
             
-            # Try each of 4 roles as the missing corner
+            # Thử lần lượt từng vai trò góc bị thiếu.
             for missing_role in ['tl', 'tr', 'bl', 'br']:
-                # Assign 3 points to the other 3 roles
-                # Sort remaining 3 by position to figure out assignment
+                # Gán 3 điểm hiện có vào các vai trò còn lại.
                 if missing_role == 'bl':
                     # Have TL, TR, BR → BL = TL + BR - TR
                     tl = min(pts, key=lambda p: p[0] + p[1])
@@ -429,14 +437,14 @@ class SmartOMR:
                         continue
                     tr = (tl[0] + br[0] - bl[0], tl[1] + br[1] - bl[1])
                 
-                # Validate: estimated corner should be within image bounds (with margin)
+                # Góc ước lượng phải nằm trong biên ảnh (cho phép margin nhỏ).
                 for p in [tl, tr, bl, br]:
                     if p[0] < -img_w * 0.1 or p[0] > img_w * 1.1:
                         break
                     if p[1] < -img_h * 0.1 or p[1] > img_h * 1.1:
                         break
                 else:
-                    # Validate dimensions
+                    # Kiểm tra kích thước khung sau ước lượng.
                     w1 = np.linalg.norm(np.array(tr) - np.array(tl))
                     w2 = np.linalg.norm(np.array(br) - np.array(bl))
                     h1 = np.linalg.norm(np.array(bl) - np.array(tl))
@@ -465,14 +473,15 @@ class SmartOMR:
         return best_corners
 
     # ===================================================================
-    # BƯỚC 1: Phát hiện circles
+    # BƯỚC 1: PHÁT HIỆN CIRCLE
     # ===================================================================
     def _detect_circles(self, gray):
-        # Dùng CLAHE đã cache (tránh tính lại)
+        """Phát hiện toàn bộ vòng tròn bằng HoughCircles (2 lượt)."""
+        # Dùng CLAHE đã cache để giảm chi phí tính toán.
         enhanced = self._gray_clahe_cache if self._gray_clahe_cache is not None else gray
         blurred = cv2.GaussianBlur(enhanced, (9, 9), 2)
         
-        # Primary detection
+        # Lượt detect chính theo bộ tham số chuẩn.
         result = cv2.HoughCircles(
             blurred, cv2.HOUGH_GRADIENT,
             dp=HOUGH_DP, minDist=HOUGH_MIN_DIST,
@@ -484,7 +493,7 @@ class SmartOMR:
             circles = [(int(x), int(y), int(r)) 
                        for x, y, r in np.round(result[0]).astype(int)]
         
-        # Supplementary detection with relaxed params if too few circles found
+        # Lượt bổ sung với ngưỡng nới lỏng nếu detect thiếu.
         if len(circles) < NUM_QUESTIONS * NUM_CHOICES * 0.6:
             result2 = cv2.HoughCircles(
                 blurred, cv2.HOUGH_GRADIENT,
@@ -496,7 +505,7 @@ class SmartOMR:
                 existing = set((x, y) for x, y, r in circles)
                 for x, y, r in np.round(result2[0]).astype(int):
                     x, y, r = int(x), int(y), int(r)
-                    # Only add if not too close to existing circle
+                    # Chỉ thêm circle mới nếu chưa trùng vị trí circle cũ.
                     if not any(abs(x-ex) < 15 and abs(y-ey) < 15 
                               for ex, ey in existing):
                         circles.append((x, y, r))
@@ -504,29 +513,29 @@ class SmartOMR:
         return circles
 
     # ===================================================================
-    # BƯỚC 2: Lọc radius + circularity
+    # BƯỚC 2: LỌC THEO BÁN KÍNH + ĐỘ TRÒN
     # ===================================================================
     def _filter_by_radius(self, circles, gray=None):
+        """Lọc circle outlier bằng median radius và kiểm tra độ tròn cục bộ."""
         if not circles:
             return []
         radii = [c[2] for c in circles]
         med = np.median(radii)
         filtered = [(x, y, r) for x, y, r in circles if abs(r - med) < med * 0.35]
         
-        # Additional filter: reject square markers and noise
-        # Check that each circle has a ring-like pattern (bright center or ring edge)
+        # Lọc bổ sung để loại marker vuông/nhiễu bằng circularity.
         if gray is not None and len(filtered) > 20:
             validated = []
             h, w = gray.shape
             for x, y, r in filtered:
-                # Get bounding box
+                # Cắt ROI quanh circle để kiểm tra cục bộ.
                 x1, y1 = max(0, x - r - 2), max(0, y - r - 2)
                 x2, y2 = min(w, x + r + 3), min(h, y + r + 3)
                 crop = gray[y1:y2, x1:x2]
                 if crop.size < 10:
                     continue
                 
-                # Check circularity via contour analysis on local crop
+                # Đánh giá circularity qua contour trong ROI.
                 _, bw = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 contours, _ = cv2.findContours(bw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 
@@ -536,19 +545,19 @@ class SmartOMR:
                     perim = cv2.arcLength(cnt, True)
                     if perim > 0:
                         circularity = 4 * np.pi * area / (perim * perim)
-                        # Real circles: circularity > 0.5; squares/irregular < 0.5
+                        # Circle thật thường có circularity cao hơn nhiễu không đều.
                         if circularity < 0.35:
                             continue
                 
                 validated.append((x, y, r))
             
-            if len(validated) >= len(filtered) * 0.6:  # don't filter too aggressively
+            if len(validated) >= len(filtered) * 0.6:  # tránh lọc quá gắt
                 return validated
         
         return filtered
 
     # ===================================================================
-    # BƯỚC 3: Chia 4 cột chính qua sub-column clustering
+    # BƯỚC 3: CHIA 4 CỘT CHÍNH
     # ===================================================================
     def _split_into_main_columns(self, circles):
         """
@@ -620,13 +629,12 @@ class SmartOMR:
         Cho mỗi cột chính, phân thành hàng (mỗi hàng = 1 câu = 4 bubbles ABCD).
         Bỏ hàng header (ABCD label in sẵn ở đầu cột).
         
-        Returns: {col_idx: [row0, row1, ...]}
-                 Mỗi row = [(cx,cy,r), ...] đã sort trái→phải (chỉ 4 circles ABCD)
+        Trả về: {col_idx: [row0, row1, ...]}
+            Mỗi row = [(cx,cy,r), ...] đã sort trái→phải (chỉ 4 circle ABCD)
         """
         grid = {}
 
-        # Trước tiên, xác định 4 subcol X centers cho mỗi cột chính
-        # Scan ALL columns first to find the best reference spacing
+        # Trước tiên, xác định spacing tham chiếu từ tất cả cột.
         ref_subcol_spacings = []
         ref_y_starts = []
         ref_y_ends = []
@@ -636,7 +644,7 @@ class SmartOMR:
             if len(col_circles) < 20:
                 continue
             subcols = self._cluster_x_local(col_circles, threshold=30)
-            # Merge very close subcols
+            # Gộp các subcol quá gần nhau.
             if len(subcols) > 1:
                 merged = [list(subcols[0])]
                 for i in range(1, len(subcols)):
@@ -649,11 +657,11 @@ class SmartOMR:
                 subcols = merged
             valid_sc = [sc for sc in subcols if len(sc) >= 20]
             if len(valid_sc) >= 4:
-                # Sort by center X, take first 4 (or best 4)
+                # Sắp theo tâm X, lấy bộ 4 đại diện.
                 sc_sorted = sorted(valid_sc, key=lambda sc: np.mean([c[0] for c in sc]))[:4]
                 centers = [np.mean([c[0] for c in sc]) for sc in sc_sorted]
                 spacings = [centers[i+1] - centers[i] for i in range(3)]
-                # Only use if spacing is fairly regular (max/min < 1.5)
+                # Chỉ dùng khi spacing tương đối đều.
                 if min(spacings) > 0 and max(spacings) / min(spacings) < 1.5:
                     ref_subcol_spacings.extend(spacings)
         
@@ -682,16 +690,16 @@ class SmartOMR:
             y_max_answer = int(h * 0.95)
 
         if self.debug:
-            print(f"    Answer Y range: [{y_min_answer:.0f}, {y_max_answer:.0f}]")
+            print(f"    Khoang Y dap an: [{y_min_answer:.0f}, {y_max_answer:.0f}]")
 
-        # Compute ABCD width from Col 1-3 for boundary correction
-        ref_abcd_d_positions = []  # rightmost ABCD subcol (D) x for cols 1-3
+        # Tính độ rộng ABCD tham chiếu từ cột 1-3 để sửa biên cột 4.
+        ref_abcd_d_positions = []  # Tâm X subcol D của cột 1-3
         ref_abcd_widths = []
         for col_idx in range(min(3, len(columns))):
             rows_c = grid.get(col_idx, [])
             if not rows_c:
                 continue
-            # Get subcol centers from 4-circle rows
+            # Lấy tâm subcol từ các hàng có đủ 4 circle.
             four_circle_rows = [r for r in rows_c if len(r) >= 4]
             if len(four_circle_rows) >= 10:
                 a_xs = [r[0][0] for r in four_circle_rows]
@@ -712,8 +720,7 @@ class SmartOMR:
             filtered = [(x, y, r) for x, y, r in col_circles 
                        if y_min_answer <= y <= y_max_answer]
             
-            # Boundary correction: check if Col 4 is missing subcol A
-            # by comparing its ABCD width to reference columns
+            # Sửa biên: kiểm tra cột 4 có thiếu subcol A hay không.
             if col_idx == 3 and ref_abcd_widths and col_idx - 1 in grid:
                 col4_subcols = self._cluster_x_local(filtered, threshold=20) if filtered else []
                 col4_valid = sorted([sc for sc in col4_subcols if len(sc) >= 15],
@@ -721,12 +728,12 @@ class SmartOMR:
                 if len(col4_valid) >= 3:
                     col4_width = np.mean([c[0] for c in col4_valid[-1]]) - np.mean([c[0] for c in col4_valid[0]])
                     if col4_width < expected_abcd_width * 0.85:
-                        # Col 4 is too narrow — likely missing leftmost subcol
-                        # Look for circles in Col 3 that should belong to Col 4
+                        # Cột 4 quá hẹp -> khả năng mất subcol trái nhất.
+                        # Thử chuyển circle phù hợp từ cột 3 sang cột 4.
                         col3_circles = columns[col_idx - 1]
                         col4_first_x = np.mean([c[0] for c in col4_valid[0]])
                         expected_a_x = col4_first_x - avg_subcol_spacing
-                        # Steal circles from col3 that are near expected_a_x
+                        # Chuyển các circle gần vị trí A kỳ vọng.
                         stolen = []
                         remaining_col3 = []
                         for c in col3_circles:
@@ -735,14 +742,14 @@ class SmartOMR:
                             else:
                                 remaining_col3.append(c)
                         if len(stolen) >= 10:
-                            # Also steal nearby noise subcol circles
+                            # Chỉ giữ circle trong dải Y đáp án.
                             stolen_y = [(x, y, r) for x, y, r in stolen
                                        if y_min_answer <= y <= y_max_answer]
                             filtered = stolen_y + filtered
                             columns[col_idx - 1] = remaining_col3
                             if self.debug:
                                 print(f"    Boundary fix: moved {len(stolen_y)} circles from Col3 to Col4")
-                            # Re-process Col 3 with corrected circles
+                            # Chạy lại cột 3 sau khi đã điều chỉnh biên.
                             grid[col_idx - 1] = self._process_one_column(
                                 col_idx - 1, remaining_col3, gray, avg_subcol_spacing)
             
@@ -755,22 +762,21 @@ class SmartOMR:
         return grid
 
     def _process_one_column(self, col_idx, col_circles, gray, avg_subcol_spacing):
-        """Xử lý 1 cột: extract ABCD → cluster Y → remove header → validate."""
+        """Xử lý 1 cột: tách ABCD → gom hàng theo Y → bỏ header → kiểm tra."""
         valid_rows = self._process_one_column_inner(col_idx, col_circles, gray, avg_subcol_spacing)
         
-        # Fallback: if too few rows detected, retry with relaxed subcol threshold
-        # (handles images with imprecise perspective where circles scatter more)
+        # Nếu thiếu hàng, thử lại với ngưỡng subcol nới lỏng để chịu méo phối cảnh tốt hơn.
         if len(valid_rows) < QUESTIONS_PER_COLUMN * 0.85:
             retry = self._process_one_column_inner(col_idx, col_circles, gray, avg_subcol_spacing, subcol_threshold=30)
             if len(retry) > len(valid_rows):
                 if self.debug:
-                    print(f"    Cột {col_idx+1}: fallback {len(valid_rows)}→{len(retry)} rows (relaxed threshold)")
+                    print(f"    Cột {col_idx+1}: fallback {len(valid_rows)}→{len(retry)} hàng (nới threshold)")
                 valid_rows = retry
         
         return valid_rows
 
     def _process_one_column_inner(self, col_idx, col_circles, gray, avg_subcol_spacing, subcol_threshold=20):
-        """Inner processing for one column with configurable subcol threshold."""
+        """Xử lý lõi cho 1 cột với ngưỡng tách subcol có thể điều chỉnh."""
         # Tìm 4 subcol ABCD
         abcd_circles = self._extract_abcd_circles(col_circles, avg_subcol_spacing, threshold=subcol_threshold)
 
@@ -792,7 +798,7 @@ class SmartOMR:
                     row_sorted = self._pick_best_4_from_n(row_sorted)
                 valid_rows.append(row_sorted)
 
-        # Nếu nhiều hơn 30 hàng → bỏ từ ĐẦU trước (header luôn nằm trên cùng)
+        # Nếu >30 hàng thì bỏ phần dư từ đầu (thường là header lọt vào).
         if len(valid_rows) > QUESTIONS_PER_COLUMN:
             excess = len(valid_rows) - QUESTIONS_PER_COLUMN
             if excess <= 2:  # Chỉ 1-2 hàng thừa: header chưa lọc được
@@ -808,7 +814,7 @@ class SmartOMR:
         return valid_rows
 
     def _cluster_x_local(self, circles, threshold=35):
-        """Cluster circles by X within a column."""
+        """Gom circle theo trục X trong phạm vi một cột chính."""
         sorted_c = sorted(circles, key=lambda c: c[0])
         subcols = []
         current = [sorted_c[0]]
@@ -824,19 +830,19 @@ class SmartOMR:
     def _extract_abcd_circles(self, col_circles, avg_spacing, threshold=20):
         """
         Từ tất cả circles trong 1 cột chính, chọn ra 4 nhóm subcol ABCD.
-        Strategy:
-        1. Subcol clustering with threshold ~25px
-        2. Filter noise subcols (too few circles)
-        3. If 4+ valid subcols: pick best 4 by spacing regularity
-        4. Fallback to k-means with noise rejection
+        Chiến lược:
+        1. Gom subcol theo X với ngưỡng cấu hình.
+        2. Lọc subcol nhiễu (quá ít circle).
+        3. Nếu >4 subcol hợp lệ thì chọn bộ 4 có spacing đều nhất.
+        4. Nếu thiếu subcol thì ước lượng theo khoảng cách trung bình.
         """
         if len(col_circles) < 8:
             return col_circles
             
-        # Strategy 1: subcol clustering with configurable threshold
+        # Bước chính: gom subcol theo ngưỡng threshold.
         subcols = self._cluster_x_local(col_circles, threshold=threshold)
         
-        # Merge subcols that are very close (< 20% of avg_spacing)
+        # Gộp subcol quá sát nhau (< 20% spacing trung bình) để tránh tách đôi cùng một cột.
         merge_dist = max(avg_spacing * 0.2, 15)
         if len(subcols) > 1:
             merged = [list(subcols[0])]
@@ -849,7 +855,7 @@ class SmartOMR:
                     merged.append(list(subcols[i]))
             subcols = merged
 
-        # Filter: keep subcols with >= 15 circles (real bubble columns ≈ 30)
+        # Giữ subcol có đủ circle để đại diện cột bubble thật.
         valid_subcols = [sc for sc in subcols if len(sc) >= 15]
         
         if len(valid_subcols) == 4:
@@ -859,7 +865,7 @@ class SmartOMR:
             return result
         
         if len(valid_subcols) > 4:
-            # Pick best 4 by spacing regularity
+            # Chọn 4 subcol có spacing đều nhất.
             sc_data = [(np.mean([c[0] for c in sc]), len(sc), sc) for sc in valid_subcols]
             sc_data.sort(key=lambda x: x[0])
             
@@ -886,31 +892,28 @@ class SmartOMR:
                 return result
         
         if len(valid_subcols) == 3:
-            # Missing one subcol. Use spacing from the 3 we have to predict the 4th.
+            # Thiếu 1 subcol: dùng spacing từ 3 subcol hiện có để suy ra vị trí còn thiếu.
             centers3 = sorted([np.mean([c[0] for c in sc]) for sc in valid_subcols])
             spacings = [centers3[i+1] - centers3[i] for i in range(len(centers3)-1)]
             sp = np.median(spacings) if spacings else avg_spacing
             
-            # Determine which position is missing: check if gap exists at edges
-            # If spacing between 0-1 is ~2*sp → missing between them
-            # If first center - column_left_edge >> sp → missing at start
-            # If column_right_edge - last center >> sp → missing at end
+            # Xác định vị trí thiếu ở giữa/đầu/cuối dựa trên cấu trúc khoảng cách.
             all_xs = [c[0] for c in col_circles]
             x_min, x_max = min(all_xs), max(all_xs)
             
-            # Check for double gap
+            # Kiểm tra khoảng trống lớn bất thường ở giữa.
             found_double = False
             for i in range(len(spacings)):
                 if spacings[i] > sp * 1.5:
-                    # Gap between centers3[i] and centers3[i+1] → insert center
+                    # Có gap lớn ở giữa 2 tâm -> chèn tâm mới vào giữa.
                     mid = (centers3[i] + centers3[i+1]) / 2
-                    # Create a fake 4th subcol center
+                    # Tạo tâm subcol thứ 4 (ước lượng).
                     centers4 = sorted(centers3 + [mid])
                     found_double = True
                     break
             
             if not found_double:
-                # Check edges
+                # Nếu không thiếu ở giữa thì xét khả năng thiếu ở mép trái/phải.
                 left_gap = centers3[0] - x_min
                 right_gap = x_max - centers3[-1]
                 if left_gap > sp * 0.5:
@@ -920,7 +923,7 @@ class SmartOMR:
                 else:
                     centers4 = centers3
             
-            # Assign circles to nearest of the 4 centers
+            # Gán circle về tâm gần nhất trong 4 tâm ước lượng.
             if len(centers4) == 4:
                 half = sp * 0.6
                 result = []
@@ -930,7 +933,7 @@ class SmartOMR:
                         result.append(c)
                 return result
         
-        # Fallback: return all circles in the column
+        # Fallback cuối: trả toàn bộ circle của cột để không mất dữ liệu.
         return col_circles
 
     def _cluster_y(self, circles):
@@ -942,10 +945,8 @@ class SmartOMR:
         if not diffs:
             return [sorted_c]
 
-        # Find the first significant gap in sorted diffs to separate
-        # within-row diffs (~0-10px) from between-row diffs (30+px).
-        # Using "first gap > 20" is robust against outlier circles that
-        # create very large diffs which would skew a "largest gap" approach.
+        # Tìm ngưỡng tách hàng dựa trên "khe" đầu tiên đủ lớn giữa các Y-diff.
+        # Cách này bền vững hơn chọn "gap lớn nhất" vì ít bị outlier chi phối.
         sorted_diffs = sorted(diffs)
         split_val = 30  # default
         for i in range(len(sorted_diffs) - 1):
@@ -1081,25 +1082,25 @@ class SmartOMR:
         return [rows[i] for i in selected_indices]
 
     # ===================================================================
-    # BƯỚC 5: Grading (tối ưu: dùng ROI crop thay vì full-image mask)
+    # BƯỚC 5: CHẤM ĐÁP ÁN (ROI CỤC BỘ ĐỂ TỐI ƯU TỐC ĐỘ)
     # ===================================================================
     @staticmethod
     def _bubble_contrast(gray, cx, cy, r):
         """
         Tính inner_mean và outer_mean cho 1 bubble bằng ROI crop nhỏ.
         Nhanh hơn ~100x so với tạo np.zeros(gray.shape) full-image.
-        Returns: (inner_val, outer_val, contrast_ratio)
+        Returns:
+            (inner_val, outer_val, contrast_ratio)
         """
         cx, cy, r = int(cx), int(cy), int(r)
         h, w = gray.shape
         outer_r = min(int(r * 2.0), r + 30)
-        # Use small inner radius (r*0.4) to sample only the TRUE center
-        # of the bubble, avoiding the printed circle outline which is dark
-        # even on unfilled bubbles and causes false positives.
+        # Dùng inner radius nhỏ để lấy vùng lõi thật của bubble,
+        # tránh viền in sẵn gây false-positive ở ô chưa tô.
         inner_r = max(int(r * 0.4), 3)
         outer_inner = max(int(r * 1.3), r + 3)
 
-        # ROI bounding box cho outer ring
+        # ROI nhỏ quanh bubble để tính nhanh hơn mask full-image.
         x1 = max(0, cx - outer_r)
         y1 = max(0, cy - outer_r)
         x2 = min(w, cx + outer_r + 1)
@@ -1111,12 +1112,12 @@ class SmartOMR:
         rh, rw = roi.shape
         lcx, lcy = cx - x1, cy - y1  # local center
 
-        # Inner mask (small ROI)
+        # Mask vùng lõi bubble.
         inner_mask = np.zeros((rh, rw), dtype="uint8")
         cv2.circle(inner_mask, (lcx, lcy), inner_r, 255, -1)
         inner_val = cv2.mean(roi, mask=inner_mask)[0]
 
-        # Outer annular ring mask (same small ROI)
+        # Mask vành ngoài để so tương phản với vùng lõi.
         outer_mask = np.zeros((rh, rw), dtype="uint8")
         cv2.circle(outer_mask, (lcx, lcy), outer_r, 255, -1)
         cv2.circle(outer_mask, (lcx, lcy), outer_inner, 0, -1)
@@ -1131,8 +1132,9 @@ class SmartOMR:
     def _bubble_fill_ratio(gray, cx, cy, r, threshold=80):
         """Tính tỉ lệ pixel tối (< threshold) trong vùng trung tâm bubble.
         
-        Real pencil fills: fr80 >= 25% (đa số pixel < 80)
-        Mild contamination (border/shadow): fr80 ~ 0% (pixel ~100-140, không đủ tối)
+        Gợi ý thực nghiệm:
+        - Tô thật: fr80 thường cao (nhiều pixel < threshold).
+        - Nhiễu nhẹ: fr80 thấp (đa số pixel chưa đủ tối).
         """
         cx, cy, r = int(cx), int(cy), int(r)
         h, w = gray.shape
@@ -1153,22 +1155,19 @@ class SmartOMR:
         return float(np.sum(pixels < threshold)) / total
 
     def _grade_all(self, gray, grid):
-        """Grade all questions using per-row relative analysis.
+        """Chấm toàn bộ câu bằng phân tích tương đối theo từng hàng.
         
-        Within each row of 4 bubbles (ABCD), find the darkest one.
-        A filled bubble is detected when:
-        1. Its contrast ratio (inner/outer) is low (< 0.65)
-        2. It's significantly darker than the next-darkest bubble (gap >= 40)
-        
-        Also recovers missing circles: when a row has only 3 circles
-        and none are filled, check the missing subcol position for a dark region.
+        Nguyên tắc chính:
+        1. Trong mỗi hàng ABCD, tìm bubble tối nhất.
+        2. Bubble được coi là tô khi tối hơn rõ rệt so với phương án kế tiếp.
+        3. Có cơ chế recover khi hàng thiếu 1 circle.
         """
         answers = {}
         q_num = 1
         for col_idx in sorted(grid.keys()):
             col_rows = grid[col_idx]
             
-            # Compute expected subcol X centers from rows with 4 circles
+            # Ước lượng tâm X chuẩn của 4 subcol từ các hàng đủ 4 circle.
             subcol_xs = [[] for _ in range(NUM_CHOICES)]
             median_r = []
             for row in col_rows:
@@ -1199,13 +1198,13 @@ class SmartOMR:
                 
                 answer = self._grade_row(inner_vals, contrasts, gray, row)
                 
-                # Recovery: if 3 circles, no answer found, try the missing position
+                # Recovery: hàng có 3 circle và chưa có đáp án -> thử vị trí subcol bị thiếu.
                 if answer is None and n == 3 and all(x is not None for x in expected_xs):
                     row_xs = [row[ci][0] for ci in range(3)]
                     row_y = int(np.mean([row[ci][1] for ci in range(3)]))
                     r = int(avg_r)
                     
-                    # Find which subcol is missing
+                    # Xác định subcol nào đang bị thiếu.
                     matched = [False] * 4
                     for rx in row_xs:
                         best_ci = min(range(4), key=lambda ci: abs(rx - expected_xs[ci]))
@@ -1224,7 +1223,7 @@ class SmartOMR:
                         if best_cr < 0.72 and best_iv < 180:
                             answer = CHOICE_LABELS[mi]
                             if self.debug:
-                                print(f"    Q{q_num:3d}: recovered {answer} at missing subcol (iv={best_iv:.0f}, cr={best_cr:.2f}, dx={best_dx})")
+                                print(f"    Q{q_num:3d}: phuc hoi {answer} tai subcol thieu (iv={best_iv:.0f}, cr={best_cr:.2f}, dx={best_dx})")
                 
                 answers[q_num] = answer
                 
@@ -1237,54 +1236,49 @@ class SmartOMR:
         return answers
 
     def _grade_row(self, inner_vals, contrasts, gray=None, row=None):
-        """Grade a single row by finding the darkest bubble relative to others."""
+        """Chấm 1 hàng bằng phân tích độ tối tương đối giữa các lựa chọn."""
         n = min(len(inner_vals), NUM_CHOICES)
         if n < 3:
             return None
         
-        # Find darkest bubble
+        # Tìm bubble tối nhất trong hàng.
         vals = inner_vals[:n]
         sorted_vals = sorted(vals)
         min_val = sorted_vals[0]
         second_val = sorted_vals[1]
         min_idx = vals.index(min_val)
         
-        # Absolute brightness check: if the darkest bubble is still very bright,
-        # it's definitely not filled (empty bubble inner ~190-220)
+        # Nếu bubble tối nhất vẫn sáng -> xem như chưa tô.
         if min_val > 185:
             return None
         
-        # Gap between darkest and 2nd darkest
+        # Khoảng cách độ tối giữa bubble tối nhất và bubble thứ 2.
         gap = second_val - min_val
         
-        # Criteria for a filled bubble:
-        # 1. Must be significantly darker than the next bubble
+        # Điều kiện 1: phải tối hơn rõ rệt so với phương án kế cận.
         if gap < 40:
             return None
         
-        # 2. For borderline inner values (90-185): verify with fill ratio
-        #    Real fills have many pixels < 80 (fr80 >= 25%)
-        #    Mild contamination (shadows, borders) has inner 90-185 but fr80 ~ 0%
+        # Điều kiện 2: vùng ranh giới thì kiểm tra thêm fill ratio để loại nhiễu.
         if min_val >= 90 and gray is not None and row is not None and min_idx < len(row):
             cx, cy, r = row[min_idx]
             fr = self._bubble_fill_ratio(gray, cx, cy, r, threshold=80)
             if fr < 0.20:
                 return None
         
-        # 3. Contrast ratio must be low (inner much darker than outer ring)
-        #    Tier 1: normal fill (strong evidence)
+        # Điều kiện 3: tỷ lệ tương phản phải đủ thấp.
+        # Mức 1: bằng chứng mạnh.
         if contrasts[min_idx] < 0.72:
             return CHOICE_LABELS[min_idx]
         
-        #    Tier 2: light fill — needs stronger evidence
-        #    Inner must be noticeably dark (<160) and contrast clearly below paper
+        # Mức 2: tô nhạt, yêu cầu thêm ràng buộc để tránh false-positive.
         if contrasts[min_idx] < 0.82 and min_val < 160 and gap >= 50:
             return CHOICE_LABELS[min_idx]
         
         return None
 
     # ===================================================================
-    # CONTAMINATION DETECTION
+    # PHÁT HIỆN NHIỄU THEO CỘT (CONTAMINATION)
     # ===================================================================
     def _detect_and_fix_contamination(self, answers, gray, grid):
         """
@@ -1386,7 +1380,7 @@ class SmartOMR:
         return answers
 
     # ===================================================================
-    # BƯỚC 7: ML Grading
+    # BƯỚC 7: CHẤM BẰNG ML
     # ===================================================================
     def _ml_grade_all(self, question_images):
         """Dùng ML model để grade tất cả câu hỏi — batch predict (nhanh hơn ~50x)."""
@@ -1431,6 +1425,7 @@ class SmartOMR:
     # BƯỚC 6: Cắt ảnh từng câu
     # ===================================================================
     def _crop_all_questions(self, image, gray, grid, answers):
+        """Cắt ảnh từng câu theo grid đã nhận diện để phục vụ lưu file/ML."""
         h, w = image.shape[:2]
         question_images = {}
         q_num = 1
@@ -1447,7 +1442,7 @@ class SmartOMR:
                 min_y = min(c[1] - c[2] for c in row)
                 max_y = max(c[1] + c[2] for c in row)
 
-                # Thêm vùng số thứ tự bên trái
+                # Thêm vùng số thứ tự bên trái để crop đủ ngữ cảnh câu hỏi.
                 bubble_width = max_x - min_x
                 label_extra = int(bubble_width * 0.40)
 
@@ -1458,7 +1453,7 @@ class SmartOMR:
 
                 crop = image[y1:y2, x1:x2].copy()
 
-                # Đánh dấu đáp án
+                # Vẽ vòng đỏ lên phương án được chọn ngay trên ảnh crop.
                 answer = answers.get(q_num)
                 if answer and answer in CHOICE_LABELS:
                     idx = CHOICE_LABELS.index(answer)
@@ -1481,6 +1476,7 @@ class SmartOMR:
     # Annotate
     # ===================================================================
     def _draw_annotated(self, image, grid, answers):
+        """Vẽ ảnh annotate tổng hợp: vòng tròn đáp án + số thứ tự câu."""
         ann = image.copy()
         q_num = 1
         for col_idx in sorted(grid.keys()):
@@ -1504,6 +1500,7 @@ class SmartOMR:
     # In kết quả
     # ===================================================================
     def _print_results(self, answers, stats):
+        """In kết quả nhận diện và thống kê theo từng cột câu hỏi."""
         print(f"\n{'='*60}")
         print(f"  KẾT QUẢ NHẬN DIỆN")
         print(f"{'='*60}")
@@ -1536,6 +1533,17 @@ class SmartOMR:
 # ============================================================
 def run(image_path, debug=False, save=True, output_dir=None,
         ml_model=None, ml_mode="raw", answer_key=None):
+    """API chạy nhanh cho 1 ảnh: nhận diện, chấm điểm, lưu output.
+
+    Args:
+        image_path: Đường dẫn ảnh phiếu.
+        debug: Bật log chi tiết.
+        save: Có lưu ảnh/file kết quả hay không.
+        output_dir: Thư mục output; None thì dùng thư mục mặc định.
+        ml_model: Đường dẫn model ML.
+        ml_mode: Chế độ feature của ML grader.
+        answer_key: File đáp án chuẩn để chấm điểm (nếu có).
+    """
     omr = SmartOMR(debug=debug, ml_model_path=ml_model, ml_mode=ml_mode)
     result = omr.process(image_path)
     if not result:
