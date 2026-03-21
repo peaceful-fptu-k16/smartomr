@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>SmartOMR Report</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; margin: 40px; color: #333; }
+        h1, h2, h3 { color: #222; }
+        h1 { text-align: center; margin-bottom: 5px; }
+        .subtitle { text-align: center; font-size: 1.2em; font-weight: bold; margin-bottom: 40px; }
+        .abstract { font-style: italic; background: #f9f9f9; padding: 20px; border-left: 4px solid #4CAF50; margin-bottom: 30px; }
+        .chapter { margin-top: 40px; border-bottom: 2px solid #ccc; padding-bottom: 10px; }
+        .section { margin-top: 20px; font-weight: bold; font-size: 1.1em; }
+        ul, ol { margin-top: 10px; margin-bottom: 10px; }
+        li { margin-bottom: 5px; }
+        b { color: #000; }
+    </style>
+</head>
+<body>
+
+    <h1>BÁO CÁO ĐỀ ÁN</h1>
+    <div class="subtitle">HỆ THỐNG CHẤM THI TRẮC NGHIỆM TỰ ĐỘNG - SmartOMR</div>
+
+    <div class="abstract">
+        <b>Tóm tắt nội dung:</b> Báo cáo này trình bày quá trình nghiên cứu, xây dựng và phát triển phần mềm <b>SmartOMR</b> – Hệ thống nhận dạng và chấm điểm phiếu thi trắc nghiệm tự động dựa trên công nghệ thị giác máy tính (Computer Vision) ứng dụng thư viện OpenCV. Hệ thống được thiết kế để xử lý mẫu phiếu 120 câu chuẩn (4 lựa chọn A, B, C, D). Điểm nổi bật của đề án là việc đề xuất và triển khai cải tiến phương pháp <b>Crop & Clean Threshold</b> kết hợp cùng các kỹ thuật tiền xử lý mạnh mẽ nhằm giải quyết các bài toán khó về nhiễu ảnh, điều kiện ánh sáng kém, ảnh chụp nghiêng và lỗi tô mờ của học sinh, từ đó mang lại công cụ chấm thi chính xác, tiết kiệm chi phí và có tính ứng dụng thực tiễn cao.
+    </div>
+
+    <h2 class="chapter">Chapter 1: Introduction (Giới thiệu)</h2>
+
+    <div class="section">1. Phát biểu bài toán, sự cần thiết và mô hình sản phẩm</div>
+    <p><b>Bài toán:</b> Chấm thi trắc nghiệm thủ công tốn rất nhiều thời gian, công sức và dễ dẫn đến sai sót do yếu tố con người. Nhu cầu tồn tại một công cụ tự động hóa việc chấm điểm cho giáo viên và các cơ sở giáo dục là rất lớn.</p>
+    <p><b>Cách sản phẩm ra đời:</b> SmartOMR ra đời với tư cách là một phần mềm Desktop (kèm giao diện trực quan GUI và chế độ dòng lệnh CLI), sinh ra để nhận diện ảnh chụp (từ điện thoại hoặc máy scan) phiếu làm bài của học sinh và xuất ra điểm số, ảnh chứa kết quả đánh dấu [Đúng/Sai/Bỏ trống] ngay lập tức.</p>
+
+    <div class="section">2. Các bước thực hiện và những khó khăn</div>
+    <p><b>Các bước thực hiện:</b> 
+    (1) Nhận ảnh đầu vào, (2) Tiền xử lý ảnh (chuyển xám, làm mờ, tăng tương phản), (3) Nhận diện điểm neo (Fiducial markers) để hiệu chỉnh góc nhìn (Warp Perspective), (4) Phát hiện bong bóng trả lời qua tìm kiếm vòng tròn, (5) Xây dựng lưới tọa độ và phân loại hàng/cột, (6) Hệ thống tính điểm, đối chiếu với đáp án và trực quan hóa kết quả.</p>
+    <p><b>Khó khăn:</b> Chất lượng ảnh đầu vào thường không đồng nhất (ảnh chụp nghiêng, méo phối cảnh); điều kiện ánh sáng phức tạp chói/tối; học sinh tô đáp án mờ, bôi xóa không sạch; hoặc lỗi vạch kẻ bảng cắt ngang qua các ô bong bóng đáp án làm nhiễu thuật toán.</p>
+
+    <div class="section">3. So sánh giải pháp, lựa chọn và đóng góp cải tiến</div>
+    <p><b>Phương pháp truyền thống:</b> Sử dụng hệ thống máy quét OMR phần cứng quang học chuyên dụng. <i>Ưu điểm:</i> Cực kỳ nhanh, chính xác hoàn hảo. <i>Nhược điểm:</i> Thiết bị đắt tiền, định dạng giấy cứng đặc thù, khó tiếp cận cho giáo viên.</p>
+    <p><b>Phương pháp dùng phần mềm CV cơ bản:</b> Chỉ dùng Global Thresholding trên toàn ảnh. <i>Nhược điểm:</i> Dễ sai số khi góc chụp nghiêng sáng tối không đều.</p>
+    <p><b>Lựa chọn & Đóng góp điểm nhấn của SmartOMR:</b> Chúng tôi áp dụng phần mềm (OpenCV) với phương pháp tiếp cận linh hoạt, cho phép cấu hình 2 chế độ chấm độc lập:
+    <ul>
+        <li><b>Standard Threshold:</b> Truyền thống, nhanh. Lọc nhiễu ảnh bằng CLAHE, xóa vạch lưới bằng Morphology.</li>
+        <li><b>Crop & Clean Threshold (Đóng góp lớn):</b> Khắc phục triệt để lỗi do ánh sáng và vạch kẻ bảng. Thay vì chấm trên ảnh lớn, SmartOMR sẽ "cắt rời" (Crop) khu vực của từng câu hỏi thành 120 ảnh nhỏ riêng biệt. Trên mỗi ảnh nhỏ, thuật toán tiến hành xóa viền, xóa khoảng trắng hai bên, nhị phân hóa cục bộ và đếm pixel. Cách này sửa được mọi lỗi lem luốc hay tô mờ. Ngoài ra, sản phẩm có bổ sung tính năng <i>Horizontal Filmstrip Gallery</i> ngay trong giao diện giúp giáo viên theo dõi và kiểm tra tận mắt chẩn đoán của máy.</li>
+    </ul></p>
+
+    <div class="section">4. Cấu trúc quyển báo cáo</div>
+    <p><b>Chương 2:</b> Nêu các kiến thức nền tảng về thị giác máy tính và hình thái học.<br/>
+    <b>Chương 3:</b> Trình bày chi tiết cách thiết lập, xử lý luồng (pipeline) và quy trình thử nghiệm trên dữ liệu.<br/>
+    <b>Chương 4:</b> Chốt lại kết luận, đóng góp và hướng phát triển tương lai.</p>
+
+    <h2 class="chapter">Chapter 2: Kiến thức nền tảng</h2>
+
+    <div class="section">1. Các kiến thức cơ bản sử dụng</div>
+    <ul>
+        <li><b>Không gian màu phân tầng & Grayscale:</b> Chuyển đổi ảnh RGB sang thang độ xám để giảm khối lượng tính toán.</li>
+        <li><b>CLAHE:</b> Cân bằng biểu đồ thu nhận cục bộ nhằm tăng độ tương phản rõ rệt trên các vùng tối hoặc lóa của ảnh chụp điện thoại.</li>
+        <li><b>Hough Circle Transform:</b> Sử dụng để nhận diện các ô "bong bóng" (bubbles) đáp án A, B, C, D.</li>
+        <li><b>Perspective Transform:</b> Tìm 4 điểm neo ở 4 góc giấy, qua phép toán ma trận dịch chuyển về một dạng hình chữ nhật vuông góc thẳng đứng.</li>
+        <li><b>Otsu's Binarization & Adaptive Thresholding:</b> Tìm ngưỡng nhị phân tự động, phù hợp để xử lý phần cắt nhỏ ảnh của từng câu (Crop & Clean).</li>
+        <li><b>Morphological Operations:</b> Dùng kernel tùy biến để tẩy bỏ các đường kẻ màn hình bảng lưới mà không làm hỏng vòng tròn đáp án.</li>
+    </ul>
+
+    <div class="section">2. Cách xây dựng chương trình</div>
+    <p>Từ những nền tảng module của OpenCV và NumPy trong Python, chương trình được xây dựng thành một pipeline tuyến tính 6 bước (Tiền xử lý &rarr; Phối cảnh &rarr; Vòng tròn &rarr; Lưới hàng cột &rarr; Chấm điểm ngưỡng/cắt mảnh &rarr; Báo cáo output). Logic được kết nối vào GUI Tkinter cho phép tương tác trực quan (kéo thanh cuộn để xem ảnh phân tích).</p>
+
+    <h2 class="chapter">Chapter 3: Xây dựng và thử nghiệm chương trình</h2>
+
+    <div class="section">1. Thiết lập hệ thống</div>
+    <p>Môi trường: Python 3.9+, OpenCV, NumPy, Pillow. Giao diện người dùng tùy chọn (<code>app.py</code>) hoặc lệnh (<code>smart_omr.py</code>). Hệ thống dùng File Text thuần túy cấu hình Đáp Án (Answer Key) vô cùng linh động.</p>
+
+    <div class="section">2. Dữ liệu và tiền xử lý dữ liệu</div>
+    <p>Đầu vào là ảnh chụp điện thoại (đủ sáng, chói, bóng râm, v.v.). Trước khi nhận diện, hệ thống tự động chèn định cỡ kích thước (<code>AUTO_SCALE_TARGET_W = 2500</code>) đảm bảo thuật toán HoughCircles luôn ổn định. Dữ liệu đi qua bộ lọc Gaussian làm mềm trước khi áp dụng biến đổi phức tạp.</p>
+
+    <div class="section">3. Kịch bản thử nghiệm</div>
+    <ul>
+        <li><b>Test-case 1 (Ảnh tiêu chuẩn lý tưởng):</b> Ảnh scan phẳng, rõ nét &rarr; Kiểm thử độ trơn tru thuật toán chia 4 cột / 30 dòng.</li>
+        <li><b>Test-case 2 (Ảnh bị méo/nghiêng phối cảnh):</b> Kiểm thử khả năng bắt góc và ghim neo của hàm Perspective Warp.</li>
+        <li><b>Test-case 3 (Ảnh có chất lượng tô kém):</b> Tẩy xoá không sạch, tô mờ, vạch kẻ bảng đan xen &rarr; Đưa vào so chuẩn giữa 2 thuật toán Standard và Crop & Clean.</li>
+    </ul>
+
+    <div class="section">4. Kết quả và đánh giá</div>
+    <p>Căn chỉnh góc hoạt động tốt. <b>Standard Threshold</b> chạy nhanh nhất, chính xác 95%. Tuy nhiên có thể sai khi bị bóng đổ cực đoan. <b>Crop & Clean Threshold</b> khắc phục tốt nhất mọi khuyết điểm, cô lập vùng câu hỏi và đếm chuẩn xác pixel, gần như miễn nhiễm nhiễu ngang. GUI Processing Steps xuất sắc trong trực quan hóa lỗi.</p>
+
+    <h2 class="chapter">Chapter 4: Kết luận</h2>
+
+    <div class="section">1. Tổng kết kết quả lý thuyết và đề án</div>
+    <p>Đề án ứng dụng xuất sắc các công thức biến đổi cơ bản (Warp, Thresholding, Morphology, CLAHE) được liên kết qua một Pipeline logic để giải quyết bài toán chấm điểm quang học nhiễu ở thực tế.</p>
+
+    <div class="section">2. Những thực nghiệm đã làm được</div>
+    <p>Sản phẩm SmartOMR v3 hoàn chỉnh tích hợp 2 phương án chấm điểm độc quyền. Xử lý chuẩn xác phiếu 120 dòng với hệ thống tô màu kết quả phân loại thị giác rõ ràng.</p>
+
+    <div class="section">3. Hướng phát triển</div>
+    <ul>
+        <li>Áp dụng mô hình Neural Networks / YOLO để nhận dạng vùng thay vì ngưỡng cấu hình tĩnh.</li>
+        <li>Cho phép tính năng tùy chỉnh Builder hỗ trợ thêm các định dạng phiếu trắc nghiệm tự chọn.</li>
+        <li>Chuyển module phân tích thành lõi Engine để phát triển Mobile App.</li>
+    </ul>
+
+    <h2 class="chapter">Reference (Tài liệu tham khảo)</h2>
+    <ol>
+        <li>Tài liệu OpenCV Documentation.</li>
+        <li>Hough Circle Transform, Image Thresholding trong Computer Vision.</li>
+        <li>Nghiên cứu ứng dụng OMR bằng Python.</li>
+    </ol>
+</body>
+</html>
