@@ -76,7 +76,7 @@ class T:
     SCORE_SM  = ("Segoe UI", 11)
 
 
-DEFAULT_MODEL = os.path.join(HERE, "models", "omr_model.pkl")
+
 RESULT_LABELS = {
     "correct": "✓  Correct",
     "wrong":   "✗  Wrong",
@@ -462,9 +462,6 @@ class App(tk.Tk):
         # State
         self.v_image  = tk.StringVar()
         self.v_key    = tk.StringVar()
-        self.v_model  = tk.StringVar(
-            value=DEFAULT_MODEL if os.path.isfile(DEFAULT_MODEL) else "")
-        self.v_mode   = tk.StringVar(value="raw")
         self.v_status = tk.StringVar(value="Ready · select an image to begin")
 
         self._result  = None
@@ -472,6 +469,13 @@ class App(tk.Tk):
         self._img_pil = None
         self._photo   = None
         self._scale   = 1.0
+
+        # Step viewer state
+        self._steps       = []   # list of (name, desc, cv2_bgr_img)
+        self._step_idx    = 0
+        self._step_pil    = None
+        self._step_photo  = None
+        self._step_scale  = 1.0
 
         self._apply_styles()
         self._build()
@@ -591,22 +595,7 @@ class App(tk.Tk):
                            self.v_key, self._browse_key,
                            "key file (TXT / JSON)", optional=True)
 
-        # ─ ML Model ─
-        _section(sb, "🧠", "ML MODEL", T.INFO)
-        self._add_file_row(sb, "Model (.pkl)",
-                           self.v_model, self._browse_model,
-                           "model file (.pkl)", optional=True)
 
-        mf = tk.Frame(sb, bg=T.SURFACE)
-        mf.pack(fill="x", padx=18, pady=(4, 8))
-        tk.Label(mf, text="Feature mode:", font=T.SMALL,
-                 fg=T.FG2, bg=T.SURFACE).pack(side="left")
-        for mode in ("raw", "sum", "pixel"):
-            tk.Radiobutton(
-                mf, text=mode, variable=self.v_mode, value=mode,
-                font=T.SMALL, fg=T.FG, bg=T.SURFACE,
-                selectcolor=T.PRIMARY, activebackground=T.SURFACE,
-            ).pack(side="left", padx=5)
 
         # ─ Score Card ─
         _section(sb, "🏆", "SCORE", T.WARNING)
@@ -731,6 +720,10 @@ class App(tk.Tk):
         t1 = tk.Frame(self._nb, bg=T.BG)
         self._nb.add(t1, text=f"{'Result Image':^{_TAB_W}}")
         self._build_image_tab(t1)
+
+        t4 = tk.Frame(self._nb, bg=T.BG)
+        self._nb.add(t4, text=f"{'Processing Steps':^{_TAB_W}}")
+        self._build_steps_tab(t4)
 
         t2 = tk.Frame(self._nb, bg=T.BG)
         self._nb.add(t2, text=f"{'Answer Details':^{_TAB_W}}")
@@ -885,6 +878,261 @@ class App(tk.Tk):
         ]:
             self._log.tag_configure(tag, foreground=color)
 
+    # ── Steps tab ─────────────────────────────────────────────────
+
+    def _build_steps_tab(self, parent):
+        """Tab hiển thị từng bước xử lý ảnh."""
+        # Toolbar
+        tb = tk.Frame(parent, bg=T.SURFACE, height=52)
+        tb.pack(fill="x")
+        tb.pack_propagate(False)
+
+        # Navigation buttons
+        nav = tk.Frame(tb, bg=T.SURFACE)
+        nav.pack(side="left", padx=16, pady=8)
+
+        self._btn_prev = _btn(nav, "  ◀  Prev  ", self._step_prev,
+                              T.ELEVATED, T.FG, T.BODY, px=14, py=5)
+        self._btn_prev.pack(side="left", padx=4)
+
+        self._btn_next = _btn(nav, "  Next  ▶  ", self._step_next,
+                              T.PRIMARY, T.FG, T.BODY, px=14, py=5)
+        self._btn_next.pack(side="left", padx=4)
+
+        # Step counter
+        self._lbl_step_counter = tk.Label(
+            tb, text="Step — / —", font=T.H3, fg=T.FG2, bg=T.SURFACE)
+        self._lbl_step_counter.pack(side="left", padx=16)
+
+        # Zoom buttons (right side)
+        zt = tk.Frame(tb, bg=T.SURFACE)
+        zt.pack(side="right", padx=16, pady=8)
+        for text, cmd in [(" − ", self._step_zoom_out),
+                          ("⊡ Fit", self._step_zoom_fit),
+                          (" + ", self._step_zoom_in)]:
+            b = _btn(zt, text, cmd, T.ELEVATED, T.FG, T.SMALL, px=10, py=4)
+            b.config(height=1)
+            b.pack(side="left", padx=2)
+        self._lbl_step_zoom = tk.Label(
+            tb, text="", font=T.SMALL, fg=T.FG3, bg=T.SURFACE)
+        self._lbl_step_zoom.pack(side="right", padx=4)
+
+        # Step name bar
+        name_bar = tk.Frame(parent, bg=T.CARD, height=42)
+        name_bar.pack(fill="x")
+        name_bar.pack_propagate(False)
+        tk.Frame(name_bar, bg=T.PRIMARY, width=4).pack(side="left", fill="y")
+        self._lbl_step_name = tk.Label(
+            name_bar, text="Chưa có kết quả",
+            font=T.H2, fg=T.FG, bg=T.CARD, anchor="w")
+        self._lbl_step_name.pack(side="left", padx=14, fill="x", expand=True)
+
+        # Main area: image left, description right
+        body = tk.Frame(parent, bg="#080b12")
+        body.pack(fill="both", expand=True)
+
+        # Image canvas
+        cf = tk.Frame(body, bg="#080b12")
+        cf.pack(side="left", fill="both", expand=True)
+
+        self._step_cvs = tk.Canvas(cf, bg="#080b12", cursor="fleur",
+                                    highlightthickness=0)
+        sbv = ttk.Scrollbar(cf, orient="vertical",
+                            command=self._step_cvs.yview,
+                            style="S.Vertical.TScrollbar")
+        sbh = ttk.Scrollbar(cf, orient="horizontal",
+                            command=self._step_cvs.xview,
+                            style="S.Horizontal.TScrollbar")
+        self._step_cvs.configure(yscrollcommand=sbv.set,
+                                 xscrollcommand=sbh.set)
+        sbv.pack(side="right", fill="y")
+        sbh.pack(side="bottom", fill="x")
+        self._step_cvs.pack(fill="both", expand=True)
+
+        # Empty state
+        self._step_cvs.create_text(
+            300, 220, text="🔬",
+            font=("Segoe UI", 48), fill=T.FG3, tags="step_prompt")
+        self._step_cvs.create_text(
+            300, 290,
+            text="Xử lý ảnh để xem các bước",
+            font=("Segoe UI", 12), fill=T.FG3, tags="step_prompt")
+
+        self._step_cvs.bind("<ButtonPress-1>",
+                            lambda e: self._step_cvs.scan_mark(e.x, e.y))
+        self._step_cvs.bind("<B1-Motion>",
+                            lambda e: self._step_cvs.scan_dragto(e.x, e.y, gain=1))
+        self._step_cvs.bind("<MouseWheel>",
+                            lambda e: (self._step_zoom_in() if e.delta > 0
+                                       else self._step_zoom_out()))
+        self._step_cvs.bind("<Configure>",
+                            lambda e: self._step_render_fit_if_needed())
+
+        # Description panel (right side)
+        desc_frame = tk.Frame(body, bg=T.CARD, width=280)
+        desc_frame.pack(side="right", fill="y")
+        desc_frame.pack_propagate(False)
+
+        tk.Frame(desc_frame, bg=T.BORDER, width=1).pack(side="left", fill="y")
+
+        desc_inner = tk.Frame(desc_frame, bg=T.CARD)
+        desc_inner.pack(fill="both", expand=True, padx=16, pady=16)
+
+        tk.Label(desc_inner, text="📝  Mô tả bước",
+                 font=T.H3, fg=T.PRIMARY, bg=T.CARD, anchor="w"
+                 ).pack(fill="x", pady=(0, 10))
+        tk.Frame(desc_inner, bg=T.BORDER, height=1).pack(fill="x", pady=(0, 12))
+
+        self._lbl_step_desc = tk.Label(
+            desc_inner, text="Chọn ảnh và nhấn Grade Now\nđể xem các bước xử lý.",
+            font=T.BODY, fg=T.FG2, bg=T.CARD,
+            anchor="nw", justify="left", wraplength=240)
+        self._lbl_step_desc.pack(fill="both", expand=True)
+
+        # Step list (thumbnails)
+        tk.Frame(desc_inner, bg=T.BORDER, height=1).pack(fill="x", pady=(12, 8))
+        tk.Label(desc_inner, text="📋  Danh sách bước",
+                 font=T.H3, fg=T.PRIMARY, bg=T.CARD, anchor="w"
+                 ).pack(fill="x", pady=(0, 6))
+
+        list_wrap = tk.Frame(desc_inner, bg=T.CARD)
+        list_wrap.pack(fill="both", expand=True)
+
+        list_cvs = tk.Canvas(list_wrap, bg=T.CARD, highlightthickness=0)
+        list_sb = ttk.Scrollbar(list_wrap, orient="vertical",
+                                command=list_cvs.yview,
+                                style="S.Vertical.TScrollbar")
+        list_cvs.configure(yscrollcommand=list_sb.set)
+        list_sb.pack(side="right", fill="y")
+        list_cvs.pack(side="left", fill="both", expand=True)
+
+        self._step_list_inner = tk.Frame(list_cvs, bg=T.CARD)
+        list_cvs.create_window((0, 0), window=self._step_list_inner,
+                               anchor="nw")
+        self._step_list_inner.bind(
+            "<Configure>",
+            lambda e: list_cvs.configure(
+                scrollregion=list_cvs.bbox("all")))
+        list_cvs.bind_all("<MouseWheel>",
+                          lambda e: list_cvs.yview_scroll(
+                              -1 * (e.delta // 120), "units"),
+                          add="+")
+        self._step_list_cvs = list_cvs
+        self._step_list_btns = []
+
+    # ── Step navigation ───────────────────────────────────────────
+
+    def _load_steps(self, step_images):
+        """Nạp danh sách ảnh bước xử lý từ kết quả."""
+        self._steps = step_images or []
+        self._step_idx = 0
+        self._rebuild_step_list()
+        if self._steps:
+            self._show_step(0)
+        else:
+            self._lbl_step_name.config(text="Không có dữ liệu")
+            self._lbl_step_desc.config(text="")
+            self._lbl_step_counter.config(text="Step — / —")
+
+    def _rebuild_step_list(self):
+        """Xây lại danh sách bước ở panel phải."""
+        for w in self._step_list_btns:
+            w.destroy()
+        self._step_list_btns = []
+
+        for i, (name, desc, _) in enumerate(self._steps):
+            bg = T.PRIMARY_D if i == self._step_idx else T.ELEVATED
+            fg = T.FG if i == self._step_idx else T.FG2
+            btn = tk.Button(
+                self._step_list_inner,
+                text=f" {i+1}. {name}",
+                font=T.SMALL, fg=fg, bg=bg,
+                anchor="w", relief="flat", bd=0,
+                cursor="hand2", padx=8, pady=4,
+                command=lambda idx=i: self._show_step(idx))
+            btn.pack(fill="x", pady=1)
+            self._step_list_btns.append(btn)
+
+    def _show_step(self, idx):
+        """Hiển thị ảnh bước thứ idx."""
+        if not self._steps or idx < 0 or idx >= len(self._steps):
+            return
+        self._step_idx = idx
+        name, desc, bgr_img = self._steps[idx]
+
+        # Update UI labels
+        self._lbl_step_counter.config(
+            text=f"Step {idx + 1} / {len(self._steps)}")
+        self._lbl_step_name.config(text=f"  {name}")
+        self._lbl_step_desc.config(text=desc)
+
+        # Highlight active in list
+        for i, btn in enumerate(self._step_list_btns):
+            if i == idx:
+                btn.config(bg=T.PRIMARY_D, fg=T.FG)
+            else:
+                btn.config(bg=T.ELEVATED, fg=T.FG2)
+
+        # Convert and display image
+        import cv2 as _cv2
+        rgb = _cv2.cvtColor(bgr_img, _cv2.COLOR_BGR2RGB)
+        self._step_pil = Image.fromarray(rgb)
+        self._step_cvs.delete("step_prompt")
+        self._step_cvs.delete("step_img")
+        self.after(60, self._step_zoom_fit)
+
+        # Update button states
+        self._btn_prev.config(
+            state="normal" if idx > 0 else "disabled")
+        self._btn_next.config(
+            state="normal" if idx < len(self._steps) - 1 else "disabled")
+
+    def _step_prev(self):
+        if self._step_idx > 0:
+            self._show_step(self._step_idx - 1)
+
+    def _step_next(self):
+        if self._step_idx < len(self._steps) - 1:
+            self._show_step(self._step_idx + 1)
+
+    def _step_render(self, scale=None):
+        if self._step_pil is None:
+            return
+        if scale is not None:
+            self._step_scale = scale
+        iw, ih = self._step_pil.size
+        nw = max(1, int(iw * self._step_scale))
+        nh = max(1, int(ih * self._step_scale))
+        resized = self._step_pil.resize((nw, nh), Image.LANCZOS)
+        self._step_photo = ImageTk.PhotoImage(resized)
+        self._step_cvs.delete("step_img")
+        self._step_cvs.create_image(0, 0, image=self._step_photo,
+                                     anchor="nw", tags="step_img")
+        self._step_cvs.configure(scrollregion=(0, 0, nw, nh))
+        self._lbl_step_zoom.config(
+            text=f"zoom: {int(self._step_scale * 100)}%")
+
+    def _step_zoom_in(self):
+        self._step_render(min(self._step_scale * 1.25, 6.0))
+
+    def _step_zoom_out(self):
+        self._step_render(max(self._step_scale * 0.80, 0.05))
+
+    def _step_zoom_fit(self):
+        if self._step_pil is None:
+            return
+        cw = self._step_cvs.winfo_width()
+        ch = self._step_cvs.winfo_height()
+        if cw < 10:
+            self.after(80, self._step_zoom_fit)
+            return
+        iw, ih = self._step_pil.size
+        self._step_render(min(cw / iw, ch / ih, 1.0))
+
+    def _step_render_fit_if_needed(self):
+        if self._step_pil:
+            self._step_zoom_fit()
+
     # ── Status bar ────────────────────────────────────────────────
 
     def _build_statusbar(self):
@@ -917,12 +1165,7 @@ class App(tk.Tk):
             initialdir=os.path.join(HERE, "answer_keys"))
         if fp: self.v_key.set(fp)
 
-    def _browse_model(self):
-        fp = filedialog.askopenfilename(
-            title="Select ML model file",
-            filetypes=[("Pickle","*.pkl"),("All","*.*")],
-            initialdir=os.path.join(HERE, "models"))
-        if fp: self.v_model.set(fp)
+
 
     # ─── ANSWER KEY ────────────────────────────────────────────────────────
 
@@ -944,8 +1187,6 @@ class App(tk.Tk):
     def _run(self):
         img  = self.v_image.get().strip()
         key  = self.v_key.get().strip() or None
-        mdl  = self.v_model.get().strip() or None
-        mode = self.v_mode.get()
 
         if not img or not os.path.isfile(img):
             messagebox.showwarning(
@@ -957,7 +1198,7 @@ class App(tk.Tk):
         self._pgbar.start(10)
         self.v_status.set("Processing…")
         self._clear_log()
-        self._nb.select(2)  # show console
+        self._nb.select(3)  # show console (tab 3 after adding Steps tab)
 
         def worker():
             import io
@@ -966,7 +1207,6 @@ class App(tk.Tk):
             self._log_write("SmartOMR — starting\n", "blue")
             self._log_write(f"  Image : {img}\n",              "dim")
             self._log_write(f"  Key   : {key or '(none)'}\n",  "dim")
-            self._log_write(f"  Model : {mdl or '(threshold grading only)'}\n", "dim")
             self._log_write("─" * 56 + "\n", "dim")
 
             buf, res = io.StringIO(), [None]
@@ -974,7 +1214,6 @@ class App(tk.Tk):
                 with redirect_stdout(buf):
                     res[0] = omr_run(
                         image_path=img, debug=False, save=True,
-                        ml_model=mdl, ml_mode=mode,
                         answer_key=key if key and os.path.isfile(key) else None,
                     )
             except Exception as ex:
@@ -1013,6 +1252,7 @@ class App(tk.Tk):
         self._update_scorecard(gr)
         self._refresh_table()
         self._show_result_image(result, gr)
+        self._load_steps(result.get('step_images', []))
 
         s = result["stats"]
         if gr:

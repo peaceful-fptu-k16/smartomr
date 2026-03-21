@@ -17,11 +17,7 @@ import os
 import sys
 import time
 
-try:
-    from modules.ml_grader import MLGrader
-    ML_AVAILABLE = True
-except ImportError:
-    ML_AVAILABLE = False
+
 
 try:
     from modules.grader import load_answer_key, grade, draw_graded_annotated
@@ -61,25 +57,27 @@ AUTO_SCALE_TARGET_W = 2500
 
 
 class SmartOMR:
-    def __init__(self, debug=False, ml_model_path=None, ml_mode="raw"):
+    def __init__(self, debug=False):
         """Khởi tạo bộ xử lý OMR.
 
         Args:
             debug: Bật log chi tiết khi xử lý.
-            ml_model_path: Đường dẫn model ML (.pkl), có thể None.
-            ml_mode: Chế độ feature cho ML grader (raw/sum/pixel).
         """
         self.debug = debug
-        self.ml_grader = None
         self._gray_clahe_cache = None
-        if ml_model_path and ML_AVAILABLE:
-            self.ml_grader = MLGrader(ml_model_path, mode=ml_mode)
-            if not self.ml_grader.is_ready():
-                print("  [WARN] ML model không load được, dùng threshold grading")
-                self.ml_grader = None
+        self._step_images = []
+
+    def _add_step(self, name, desc, img):
+        """Lưu ảnh trung gian của 1 bước xử lý."""
+        if len(img.shape) == 2:
+            vis = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
+        else:
+            vis = img.copy()
+        self._step_images.append((name, desc, vis))
 
     def process(self, image_path):
         """Xử lý 1 ảnh phiếu và trả về đáp án + ảnh annotate + thống kê."""
+        self._step_images = []  # reset
         print(f"\n{'='*60}")
         print(f"  SmartOMR v3")
         print(f"  Ảnh: {image_path}")
@@ -91,6 +89,12 @@ class SmartOMR:
             print(f"[ERROR] Không đọc được: {image_path}")
             return None
 
+        # === STEP 1: Ảnh gốc ===
+        self._add_step(
+            "Ảnh gốc (Original)",
+            f"Ảnh đầu vào chưa xử lý.\nKích thước: {image.shape[1]}x{image.shape[0]}",
+            image)
+
         # Tự co giãn ảnh đầu vào để ổn định bước HoughCircles.
         h_orig, w_orig = image.shape[:2]
         self._scale_factor = 1.0
@@ -101,9 +105,15 @@ class SmartOMR:
             image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
             print(f"  Auto-scaled: {w_orig}x{h_orig} → {new_w}x{new_h} (×{self._scale_factor:.2f})")
 
+        # === STEP 2: Grayscale ===
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         h, w = gray.shape
         print(f"  Kích thước: {w}x{h}")
+        self._add_step(
+            "Grayscale",
+            "Chuyển ảnh màu sang thang xám (0–255).\n"
+            "Công thức: Y = 0.299*R + 0.587*G + 0.114*B",
+            gray)
 
         # Hiệu chỉnh phối cảnh dựa trên marker 4 góc.
         warped = self._perspective_correct(image, gray)
@@ -112,6 +122,11 @@ class SmartOMR:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
             h, w = gray.shape
             print(f"  Perspective corrected: {w}x{h}")
+            self._add_step(
+                "Perspective Warp",
+                "Hiệu chỉnh phối cảnh dựa trên maker 4 góc.\n"
+                "Tìm marker → getPerspectiveTransform → warpPerspective",
+                image)
 
         # Co giãn lại sau warp về kích thước chuẩn để pipeline ổn định.
         h_cur, w_cur = image.shape[:2]
@@ -126,19 +141,60 @@ class SmartOMR:
             self._scale_factor *= scale
             print(f"  Post-warp scale: {w_cur}x{h_cur} -> {new_w}x{new_h} (x{scale:.2f})")
 
-        # CLAHE tăng tương phản; cache để tái sử dụng ở nhiều bước.
+        # === STEP 3: CLAHE ===
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         self._gray_clahe_cache = clahe.apply(gray)
+        self._add_step(
+            "CLAHE (Tăng tương phản)",
+            "Contrast Limited Adaptive Histogram Equalization.\n"
+            "Tăng tương phản cục bộ giúp nhận diện bubble tốt hơn.\n"
+            f"clipLimit=2.0, tileGridSize=(8,8)",
+            self._gray_clahe_cache)
+
+        # === STEP 4: GaussianBlur ===
+        enhanced = self._gray_clahe_cache
+        blurred = cv2.GaussianBlur(enhanced, (9, 9), 2)
+        self._add_step(
+            "GaussianBlur",
+            "Làm mờ Gaussian trước khi phát hiện vòng tròn.\n"
+            "Giảm nhiễu để HoughCircles ổn định hơn.\n"
+            "kernel=(9,9), sigma=2",
+            blurred)
 
         # === BƯỚC 1: Phát hiện tất cả circles ===
         print(f"\n[1/6] HoughCircles...")
         raw_circles = self._detect_circles(gray)
         print(f"  -> {len(raw_circles)} circles")
 
+        # === STEP 5: HoughCircles (raw) ===
+        vis_raw = image.copy()
+        for (cx, cy, r) in raw_circles:
+            cv2.circle(vis_raw, (cx, cy), r, (0, 255, 0), 2)
+            cv2.circle(vis_raw, (cx, cy), 2, (0, 0, 255), 3)
+        self._add_step(
+            "HoughCircles (Raw)",
+            f"Phát hiện vòng tròn bằng HoughCircles.\n"
+            f"Tổng số: {len(raw_circles)} circles.\n"
+            f"dp={HOUGH_DP}, minDist={HOUGH_MIN_DIST}, "
+            f"param1={HOUGH_PARAM1}, param2={HOUGH_PARAM2}",
+            vis_raw)
+
         # === BƯỚC 2: Lọc radius, bỏ outlier ===
         print(f"[2/6] Lọc theo radius...")
         good_circles = self._filter_by_radius(raw_circles, gray)
         print(f"  -> {len(good_circles)} circles (radius lọc)")
+
+        # === STEP 6: Lọc Radius & Circularity ===
+        vis_filt = image.copy()
+        for (cx, cy, r) in good_circles:
+            cv2.circle(vis_filt, (cx, cy), r, (255, 180, 0), 2)
+            cv2.circle(vis_filt, (cx, cy), 2, (0, 0, 255), 3)
+        self._add_step(
+            "Lọc Radius & Circularity",
+            f"Lọc bỏ vòng tròn outlier theo bán kính trung vị\n"
+            f"và độ tròn (circularity).\n"
+            f"Còn lại: {len(good_circles)}/{len(raw_circles)} circles",
+            vis_filt)
 
         # === BƯỚC 3: Phân 4 cột chính theo X ===
         print(f"[3/6] Chia 4 cột chính...")
@@ -148,39 +204,99 @@ class SmartOMR:
                 xs = [c[0] for c in col]
                 print(f"  Cột {ci+1}: {len(col)} circles, x=[{min(xs)},{max(xs)}]")
 
+        # === STEP 7: Chia 4 cột ===
+        col_colors = [(0, 0, 255), (0, 200, 0), (255, 100, 0), (200, 0, 200)]
+        vis_cols = image.copy()
+        col_desc = ""
+        for ci, col in enumerate(columns):
+            color = col_colors[ci % 4]
+            for (cx, cy, r) in col:
+                cv2.circle(vis_cols, (cx, cy), r, color, 2)
+            if col:
+                xs = [c[0] for c in col]
+                col_desc += f"Cột {ci+1}: {len(col)} circles  "
+        self._add_step(
+            "Chia 4 cột chính",
+            f"Phân nhóm circles theo tọa độ X thành 4 cột.\n"
+            f"Tìm 3 khoảng trống lớn nhất giữa các sub-column.\n"
+            f"{col_desc}",
+            vis_cols)
+
         # === BƯỚC 4: Trong mỗi cột, phân hàng + ABCD ===
         print(f"[4/6] Phân hàng & xác định A/B/C/D...")
         grid = self._build_answer_grid(columns, gray)
         total_q = sum(len(rows) for rows in grid.values())
         print(f"  -> {total_q} câu nhận diện")
 
+        # === STEP 8: Answer Grid ===
+        vis_grid = image.copy()
+        q_num = 1
+        abcd_colors = [(0, 0, 220), (0, 180, 0), (220, 120, 0), (180, 0, 180)]
+        for col_idx in sorted(grid.keys()):
+            for row in grid[col_idx]:
+                if q_num > NUM_QUESTIONS:
+                    break
+                for ci, (cx, cy, r) in enumerate(row[:NUM_CHOICES]):
+                    cv2.circle(vis_grid, (cx, cy), r, abcd_colors[ci % 4], 2)
+                if row:
+                    cv2.putText(vis_grid, str(q_num),
+                                (row[0][0] - row[0][2] - 50, row[0][1] + 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                q_num += 1
+        self._add_step(
+            "Answer Grid (Hàng & ABCD)",
+            f"Phân hàng (cluster Y) và xác định vị trí A/B/C/D.\n"
+            f"Bỏ header row, giữ 30 hàng/cột.\n"
+            f"Tổng: {total_q} câu nhận diện.\n"
+            f"Màu: Đỏ=A, Xanh=B, Cam=C, Tím=D",
+            vis_grid)
+
         # === BƯỚC 5: Grading (threshold) ===
-        print(f"[5/7] Xác định đáp án (threshold)...")
+        print(f"[5/6] Xác định đáp án (threshold)...")
         answers = self._grade_all(gray, grid)
         n_answered = sum(1 for v in answers.values() if v is not None)
         print(f"  -> {n_answered}/{len(answers)} câu có đáp án")
 
+        # === STEP 9: Threshold Grading ===
+        vis_thresh = image.copy()
+        q_num = 1
+        for col_idx in sorted(grid.keys()):
+            for row in grid[col_idx]:
+                if q_num > NUM_QUESTIONS:
+                    break
+                answer = answers.get(q_num)
+                for ci, (cx, cy, r) in enumerate(row[:NUM_CHOICES]):
+                    if answer and ci < len(CHOICE_LABELS) and CHOICE_LABELS[ci] == answer:
+                        cv2.circle(vis_thresh, (cx, cy), r + 5, (0, 0, 255), 3)
+                        cv2.circle(vis_thresh, (cx, cy), r, (0, 0, 255), -1)
+                    else:
+                        cv2.circle(vis_thresh, (cx, cy), r, (0, 200, 0), 1)
+                if row:
+                    label = f"{q_num}:{answer or '-'}"
+                    cv2.putText(vis_thresh, label,
+                                (row[0][0] - row[0][2] - 70, row[0][1] + 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 0), 1)
+                q_num += 1
+        self._add_step(
+            "Threshold Grading",
+            f"Xác định đáp án bằng phân tích độ sáng vùng lõi.\n"
+            f"Bubble tối nhất + contrast với vùng xung quanh.\n"
+            f"Kết quả: {n_answered}/{len(answers)} câu có đáp án",
+            vis_thresh)
+
         # === BƯỚC 6: Cắt ảnh từng câu ===
-        print(f"[6/7] Cắt ảnh câu hỏi...")
+        print(f"[6/6] Cắt ảnh câu hỏi...")
         question_images = self._crop_all_questions(image, gray, grid, answers)
         print(f"  -> {len(question_images)} ảnh")
 
-        # === BƯỚC 7: ML Grading (nếu có model) ===
-        ml_answers = {}
-        if self.ml_grader and self.ml_grader.is_ready():
-            print(f"[7/7] ML Grading...")
-            ml_answers = self._ml_grade_all(question_images)
-            n_ml = sum(1 for v in ml_answers.values() if v[0] is not None)
-            print(f"  -> ML: {n_ml}/{len(ml_answers)} câu")
-            # Kết hợp: ML override khi threshold không chắc chắn
-            answers = self._combine_answers(answers, ml_answers, gray, grid)
-            n_answered = sum(1 for v in answers.values() if v is not None)
-            print(f"  -> Kết hợp: {n_answered}/{len(answers)} câu có đáp án")
-        else:
-            if self.ml_grader is None and self.debug:
-                print(f"[7/7] ML Grading: bỏ qua (không có model)")
-
+        # === STEP 10: Kết quả cuối cùng ===
         annotated = self._draw_annotated(image, grid, answers)
+        self._add_step(
+            "Kết quả Annotated",
+            f"Ảnh kết quả cuối cùng với vòng tròn đáp án\n"
+            f"và số thứ tự câu hỏi.",
+            annotated)
+
         elapsed = time.time() - t0
 
         stats = {
@@ -190,9 +306,7 @@ class SmartOMR:
             'detected_questions': total_q,
             'answered': n_answered,
             'unanswered': total_q - n_answered,
-            'processing_time': elapsed,
-            'ml_enabled': self.ml_grader is not None,
-            'ml_answers': ml_answers
+            'processing_time': elapsed
         }
 
         self._print_results(answers, stats)
@@ -206,7 +320,8 @@ class SmartOMR:
             'question_images': question_images,
             'stats': stats,
             'grid': grid,
-            'image_orig': image
+            'image_orig': image,
+            'step_images': list(self._step_images)
         }
 
     # ===================================================================
@@ -1379,47 +1494,7 @@ class SmartOMR:
         
         return answers
 
-    # ===================================================================
-    # BƯỚC 7: CHẤM BẰNG ML
-    # ===================================================================
-    def _ml_grade_all(self, question_images):
-        """Dùng ML model để grade tất cả câu hỏi — batch predict (nhanh hơn ~50x)."""
-        crops = {q_num: qi['image'] for q_num, qi in question_images.items()}
-        return self.ml_grader.predict_batch(crops)
 
-    def _combine_answers(self, threshold_answers, ml_answers, gray, grid):
-        """Kết hợp kết quả threshold và ML.
-        
-        Chiến lược:
-        - Nếu cả 2 đồng ý → dùng kết quả chung
-        - Nếu threshold = None, ML có câu trả lời → dùng ML
-        - Nếu khác nhau → dùng ML nếu confidence > 0.7, ngược lại dùng threshold
-        """
-        combined = dict(threshold_answers)
-        for q_num, (ml_ans, ml_conf) in ml_answers.items():
-            th_ans = threshold_answers.get(q_num)
-            
-            if th_ans == ml_ans:
-                continue  # Đồng ý
-            
-            # ML predict 'blank' → coi như None
-            effective_ml = ml_ans if ml_ans != 'blank' else None
-            
-            if th_ans is None and effective_ml is not None and ml_conf > 0.85:
-                combined[q_num] = effective_ml
-                if self.debug:
-                    print(f"  Q{q_num:03d}: threshold=None -> ML={ml_ans} (conf={ml_conf:.2f})")
-            elif th_ans is not None and effective_ml is None and ml_conf > 0.85:
-                # ML nói blank với confidence cao → bỏ trống
-                combined[q_num] = None
-                if self.debug:
-                    print(f"  Q{q_num:03d}: threshold={th_ans} -> ML=blank (conf={ml_conf:.2f})")
-            elif th_ans != effective_ml and effective_ml is not None and ml_conf > 0.85:
-                combined[q_num] = effective_ml
-                if self.debug:
-                    print(f"  Q{q_num:03d}: threshold={th_ans} -> ML={ml_ans} (conf={ml_conf:.2f})")
-        
-        return combined
 
     # ===================================================================
     # BƯỚC 6: Cắt ảnh từng câu
@@ -1532,7 +1607,7 @@ class SmartOMR:
 # ENTRY POINT
 # ============================================================
 def run(image_path, debug=False, save=True, output_dir=None,
-        ml_model=None, ml_mode="raw", answer_key=None):
+        answer_key=None):
     """API chạy nhanh cho 1 ảnh: nhận diện, chấm điểm, lưu output.
 
     Args:
@@ -1540,11 +1615,9 @@ def run(image_path, debug=False, save=True, output_dir=None,
         debug: Bật log chi tiết.
         save: Có lưu ảnh/file kết quả hay không.
         output_dir: Thư mục output; None thì dùng thư mục mặc định.
-        ml_model: Đường dẫn model ML.
-        ml_mode: Chế độ feature của ML grader.
         answer_key: File đáp án chuẩn để chấm điểm (nếu có).
     """
-    omr = SmartOMR(debug=debug, ml_model_path=ml_model, ml_mode=ml_mode)
+    omr = SmartOMR(debug=debug)
     result = omr.process(image_path)
     if not result:
         return result
@@ -1618,9 +1691,6 @@ if __name__ == "__main__":
     p.add_argument('--debug', '-d', action='store_true')
     p.add_argument('--show', action='store_true')
     p.add_argument('--no-save', action='store_true')
-    p.add_argument('--ml-model', '-m', help='Path to trained ML model (.pkl)')
-    p.add_argument('--ml-mode', choices=['raw', 'sum', 'pixel'], default='raw',
-                   help='Feature mode: raw (best), sum (60 features) or pixel (900 features)')
     p.add_argument('--answer-key', '-k', default=None,
                    help='File dap an chuan (.txt/.json) de cham diem')
     p.add_argument('--create-key', action='store_true',
@@ -1644,7 +1714,6 @@ if __name__ == "__main__":
         sys.exit(1)
 
     result = run(args.image, debug=args.debug, save=not args.no_save,
-                 ml_model=args.ml_model, ml_mode=args.ml_mode,
                  answer_key=args.answer_key)
 
     if result and args.show:
