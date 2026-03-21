@@ -460,9 +460,10 @@ class App(tk.Tk):
         self.geometry(f"{W}x{H}+{sx}+{sy}")
 
         # State
-        self.v_image  = tk.StringVar()
-        self.v_key    = tk.StringVar()
-        self.v_status = tk.StringVar(value="Ready · select an image to begin")
+        self.v_image          = tk.StringVar()
+        self.v_key            = tk.StringVar()
+        self.v_status         = tk.StringVar(value="Ready · select an image to begin")
+        self.v_grading_method = tk.StringVar(value="standard")
 
         self._result  = None
         self._grading = None
@@ -582,9 +583,35 @@ class App(tk.Tk):
     # ── Sidebar ────────────────────────────────────────────────────
 
     def _build_sidebar(self, parent):
-        sb = tk.Frame(parent, bg=T.SURFACE, width=290)
-        sb.pack(side="left", fill="y")
-        sb.pack_propagate(False)
+        sb_wrap = tk.Frame(parent, bg=T.SURFACE, width=290)
+        sb_wrap.pack(side="left", fill="y")
+        sb_wrap.pack_propagate(False)
+
+        cvs = tk.Canvas(sb_wrap, bg=T.SURFACE, highlightthickness=0)
+        scrollbar_y = ttk.Scrollbar(sb_wrap, orient="vertical", command=cvs.yview)
+        scrollbar_x = ttk.Scrollbar(sb_wrap, orient="horizontal", command=cvs.xview)
+        
+        sb = tk.Frame(cvs, bg=T.SURFACE)
+        
+        sb.bind(
+            "<Configure>",
+            lambda e: cvs.configure(scrollregion=cvs.bbox("all"))
+        )
+        
+        cvs.create_window((0, 0), window=sb, anchor="nw")
+        cvs.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+        
+        scrollbar_x.pack(side="bottom", fill="x")
+        scrollbar_y.pack(side="right", fill="y")
+        cvs.pack(side="left", fill="both", expand=True)
+        
+        def _on_mousewheel_y(event):
+            cvs.yview_scroll(int(-1*(event.delta/120)), "units")
+        def _on_mousewheel_x(event):
+            cvs.xview_scroll(int(-1*(event.delta/120)), "units")
+            
+        cvs.bind("<Enter>", lambda _: (cvs.bind_all("<MouseWheel>", _on_mousewheel_y), cvs.bind_all("<Shift-MouseWheel>", _on_mousewheel_x)))
+        cvs.bind("<Leave>", lambda _: (cvs.unbind_all("<MouseWheel>"), cvs.unbind_all("<Shift-MouseWheel>")))
 
         # ─ Input Files ─
         _section(sb, "📂", "INPUT FILES", T.PRIMARY)
@@ -600,6 +627,19 @@ class App(tk.Tk):
         # ─ Score Card ─
         _section(sb, "🏆", "SCORE", T.WARNING)
         self._build_scorecard(sb)
+
+        # ─ Options ─
+        _section(sb, "⚙️", "GRADING METHOD", T.PRIMARY)
+        opts = tk.Frame(sb, bg=T.SURFACE)
+        opts.pack(fill="x", padx=16, pady=(4, 10))
+        tk.Radiobutton(opts, text="Standard Threshold", variable=self.v_grading_method, 
+                       value="standard", bg=T.SURFACE, fg=T.FG, font=T.BODY, 
+                       activebackground=T.SURFACE, activeforeground=T.FG, 
+                       selectcolor=T.BG).pack(anchor="w", pady=2)
+        tk.Radiobutton(opts, text="Crop & Clean Threshold", variable=self.v_grading_method, 
+                       value="crop_clean", bg=T.SURFACE, fg=T.FG, font=T.BODY,
+                       activebackground=T.SURFACE, activeforeground=T.FG, 
+                       selectcolor=T.BG).pack(anchor="w", pady=2)
 
         # ─ Run ─
         run_wrap = tk.Frame(sb, bg=T.SURFACE, padx=18)
@@ -617,6 +657,7 @@ class App(tk.Tk):
             ("📄  Save Grading Report",  self._export_report),
             ("🖼  Save Graded Image",     self._export_image),
             ("📂  Open Output Folder",    self._open_output),
+            ("📂  Mở thư mục 120 câu đã cắt", self._open_questions_folder),
         ]:
             _btn(ex, text, cmd, T.CARD, T.FG2, T.SMALL, px=12, py=7
                  ).pack(fill="x", pady=2)
@@ -1215,6 +1256,7 @@ class App(tk.Tk):
                     res[0] = omr_run(
                         image_path=img, debug=False, save=True,
                         answer_key=key if key and os.path.isfile(key) else None,
+                        grading_method=self.v_grading_method.get(),
                     )
             except Exception as ex:
                 self._log_write(f"\n[ERROR] {ex}\n", "red")
@@ -1401,6 +1443,84 @@ class App(tk.Tk):
         out = os.path.join(HERE, "output")
         os.makedirs(out, exist_ok=True)
         os.startfile(out)
+
+    def _open_questions_folder(self):
+        if self._result and 'question_images' in self._result:
+            QuestionGalleryDialog(self, self._result['question_images'])
+        elif self._result and 'q_dir' in self._result and os.path.isdir(self._result['q_dir']):
+            os.startfile(self._result['q_dir'])
+        else:
+            self._open_output()
+
+class QuestionGalleryDialog(tk.Toplevel):
+    def __init__(self, parent, q_dict):
+        super().__init__(parent)
+        self.title("120 Câu Hỏi Đã Xử Lý")
+        self.geometry("900x700")
+        self.configure(bg=T.BG)
+        self.transient(parent)
+        self.grab_set()
+
+        lbl = tk.Label(self, text="Danh sách 120 ảnh đã xử lý", font=T.H2, bg=T.BG, fg=T.PRIMARY)
+        lbl.pack(pady=10)
+
+        container = tk.Frame(self, bg=T.BG)
+        container.pack(fill="both", expand=True, padx=20, pady=10)
+
+        canvas = tk.Canvas(container, bg=T.BG, highlightthickness=0)
+        scrollbar_y = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        scrollbar_x = ttk.Scrollbar(container, orient="horizontal", command=canvas.xview)
+        scrollable_frame = tk.Frame(canvas, bg=T.BG)
+
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(
+                scrollregion=canvas.bbox("all")
+            )
+        )
+
+        canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+
+        scrollbar_x.pack(side="bottom", fill="x")
+        scrollbar_y.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        
+        def _on_mousewheel(event):
+            # Roll mouse wheel to scroll horizontally
+            canvas.xview_scroll(int(-1*(event.delta/120)), "units")
+            
+        # Bind only to this window
+        self.bind("<Enter>", lambda _: self.bind_all("<MouseWheel>", _on_mousewheel))
+        self.bind("<Leave>", lambda _: self.unbind_all("<MouseWheel>"))
+
+        import cv2
+        from PIL import Image, ImageTk
+        self.images = [] 
+        
+        row_frame = tk.Frame(scrollable_frame, bg=T.BG)
+        row_frame.pack(fill="y", expand=True, padx=10, pady=20)
+        
+        for q_num in sorted(q_dict.keys()):
+            box = tk.Frame(row_frame, bg=T.SURFACE, bd=1, relief="solid")
+            box.pack(side="left", padx=10, pady=5)
+            
+            ans = q_dict[q_num].get('answer') or "_"
+            tk.Label(box, text=f"Câu {q_num}: {ans}", bg=T.SURFACE, fg=T.FG, font=T.BODY).pack(pady=(5,0))
+            
+            bgr = q_dict[q_num]['image']
+            rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb)
+            
+            # Phóng to một chút để xem rõ hơn trên dải ngang
+            if pil_img.width < 150:
+                scale = 150 / pil_img.width
+                pil_img = pil_img.resize((int(pil_img.width * scale), int(pil_img.height * scale)), Image.LANCZOS)
+            
+            tk_img = ImageTk.PhotoImage(pil_img)
+            self.images.append(tk_img)
+            lbl_img = tk.Label(box, image=tk_img, bg=T.SURFACE)
+            lbl_img.pack(padx=10, pady=10)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

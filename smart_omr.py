@@ -590,6 +590,353 @@ class SmartOMR:
     # ===================================================================
     # BƯỚC 1: PHÁT HIỆN CIRCLE
     # ===================================================================
+    def process_crop_clean(self, image_path):
+        """Xử lý 1 ảnh phiếu theo phương pháp tách biệt: Crop & Clean."""
+        self._step_images = []  # reset
+        print(f"\n{'='*60}")
+        print(f"  SmartOMR v3 (Crop & Clean Method)")
+        print(f"  Ảnh: {image_path}")
+        print(f"{'='*60}")
+
+        t0 = time.time()
+        image = cv2.imread(image_path)
+        if image is None:
+            print(f"[ERROR] Không đọc được: {image_path}")
+            return None
+
+        # === STEP 1: Ảnh gốc ===
+        self._add_step(
+            "Ảnh gốc (Original)",
+            f"Ảnh đầu vào chưa xử lý.\nKích thước: {image.shape[1]}x{image.shape[0]}",
+            image)
+
+        # Tự co giãn ảnh đầu vào để ổn định bước HoughCircles.
+        h_orig, w_orig = image.shape[:2]
+        self._scale_factor = 1.0
+        if w_orig < AUTO_SCALE_TARGET_W * 0.75:
+            self._scale_factor = AUTO_SCALE_TARGET_W / w_orig
+            new_w = AUTO_SCALE_TARGET_W
+            new_h = int(h_orig * self._scale_factor)
+            image = cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            print(f"  Auto-scaled: {w_orig}x{h_orig} → {new_w}x{new_h} (×{self._scale_factor:.2f})")
+
+        # === STEP 2: Grayscale ===
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        print(f"  Kích thước: {w}x{h}")
+        self._add_step(
+            "Grayscale",
+            "Chuyển ảnh màu sang thang xám (0–255).\n"
+            "Công thức: Y = 0.299*R + 0.587*G + 0.114*B",
+            gray)
+
+        # Hiệu chỉnh phối cảnh dựa trên marker 4 góc.
+        warped = self._perspective_correct(image, gray)
+        if warped is not None:
+            image = warped
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+            print(f"  Perspective corrected: {w}x{h}")
+            self._add_step(
+                "Perspective Warp",
+                "Hiệu chỉnh phối cảnh dựa trên maker 4 góc.\n"
+                "Tìm marker → getPerspectiveTransform → warpPerspective",
+                image)
+
+        # Co giãn lại sau warp về kích thước chuẩn để pipeline ổn định.
+        h_cur, w_cur = image.shape[:2]
+        if w_cur < AUTO_SCALE_TARGET_W * 0.90 or w_cur > AUTO_SCALE_TARGET_W * 1.10:
+            scale = AUTO_SCALE_TARGET_W / w_cur
+            new_w = AUTO_SCALE_TARGET_W
+            new_h = int(h_cur * scale)
+            interp = cv2.INTER_CUBIC if scale > 1 else cv2.INTER_AREA
+            image = cv2.resize(image, (new_w, new_h), interpolation=interp)
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            h, w = gray.shape
+            self._scale_factor *= scale
+            print(f"  Post-warp scale: {w_cur}x{h_cur} -> {new_w}x{new_h} (x{scale:.2f})")
+
+        # === STEP 3: CLAHE ===
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        self._gray_clahe_cache = clahe.apply(gray)
+        self._add_step(
+            "CLAHE (Tăng tương phản)",
+            "Contrast Limited Adaptive Histogram Equalization.\n"
+            "Tăng tương phản cục bộ giúp nhận diện bubble tốt hơn.\n"
+            f"clipLimit=2.0, tileGridSize=(8,8)",
+            self._gray_clahe_cache)
+
+        # === STEP 4: GaussianBlur ===
+        enhanced = self._gray_clahe_cache
+        blurred = cv2.GaussianBlur(enhanced, (9, 9), 2)
+        self._add_step(
+            "GaussianBlur",
+            "Làm mờ Gaussian trước khi phát hiện vòng tròn.\n"
+            "Giảm nhiễu để HoughCircles ổn định hơn.\n"
+            "kernel=(9,9), sigma=2",
+            blurred)
+
+        # === BƯỚC 1: Phát hiện tất cả circles ===
+        print(f"\n[1/6] HoughCircles...")
+        raw_circles = self._detect_circles(gray)
+        print(f"  -> {len(raw_circles)} circles")
+
+        # === STEP 5: HoughCircles (raw) ===
+        vis_raw = image.copy()
+        for (cx, cy, r) in raw_circles:
+            cv2.circle(vis_raw, (cx, cy), r, (0, 255, 0), 2)
+            cv2.circle(vis_raw, (cx, cy), 2, (0, 0, 255), 3)
+        self._add_step(
+            "HoughCircles (Raw)",
+            f"Phát hiện vòng tròn bằng HoughCircles.\n"
+            f"Tổng số: {len(raw_circles)} circles.\n"
+            f"dp={HOUGH_DP}, minDist={HOUGH_MIN_DIST}, "
+            f"param1={HOUGH_PARAM1}, param2={HOUGH_PARAM2}",
+            vis_raw)
+
+        # === BƯỚC 2: Lọc radius, bỏ outlier ===
+        print(f"[2/6] Lọc theo radius...")
+        good_circles = self._filter_by_radius(raw_circles, gray)
+        print(f"  -> {len(good_circles)} circles (radius lọc)")
+
+        # === STEP 6: Lọc Radius & Circularity ===
+        vis_filt = image.copy()
+        for (cx, cy, r) in good_circles:
+            cv2.circle(vis_filt, (cx, cy), r, (255, 180, 0), 2)
+            cv2.circle(vis_filt, (cx, cy), 2, (0, 0, 255), 3)
+        self._add_step(
+            "Lọc Radius & Circularity",
+            f"Lọc bỏ vòng tròn outlier theo bán kính trung vị\n"
+            f"và độ tròn (circularity).\n"
+            f"Còn lại: {len(good_circles)}/{len(raw_circles)} circles",
+            vis_filt)
+
+        # === BƯỚC 3: Phân 4 cột chính theo X ===
+        print(f"[3/6] Chia 4 cột chính...")
+        columns = self._split_into_main_columns(good_circles)
+        for ci, col in enumerate(columns):
+            if col:
+                xs = [c[0] for c in col]
+                print(f"  Cột {ci+1}: {len(col)} circles, x=[{min(xs)},{max(xs)}]")
+
+        # === STEP 7: Chia 4 cột ===
+        col_colors = [(0, 0, 255), (0, 200, 0), (255, 100, 0), (200, 0, 200)]
+        vis_cols = image.copy()
+        col_desc = ""
+        for ci, col in enumerate(columns):
+            color = col_colors[ci % 4]
+            for (cx, cy, r) in col:
+                cv2.circle(vis_cols, (cx, cy), r, color, 2)
+            if col:
+                xs = [c[0] for c in col]
+                col_desc += f"Cột {ci+1}: {len(col)} circles  "
+        self._add_step(
+            "Chia 4 cột chính",
+            f"Phân nhóm circles theo tọa độ X thành 4 cột.\n"
+            f"Tìm 3 khoảng trống lớn nhất giữa các sub-column.\n"
+            f"{col_desc}",
+            vis_cols)
+
+        # === BƯỚC 4: Trong mỗi cột, phân hàng + ABCD ===
+        print(f"[4/6] Phân hàng & xác định A/B/C/D...")
+        grid = self._build_answer_grid(columns, gray)
+        total_q = sum(len(rows) for rows in grid.values())
+        print(f"  -> {total_q} câu nhận diện")
+
+        # === STEP 8: Answer Grid ===
+        vis_grid = image.copy()
+        q_num = 1
+        abcd_colors = [(0, 0, 220), (0, 180, 0), (220, 120, 0), (180, 0, 180)]
+        for col_idx in sorted(grid.keys()):
+            for row in grid[col_idx]:
+                if q_num > NUM_QUESTIONS:
+                    break
+                for ci, (cx, cy, r) in enumerate(row[:NUM_CHOICES]):
+                    cv2.circle(vis_grid, (cx, cy), r, abcd_colors[ci % 4], 2)
+                if row:
+                    cv2.putText(vis_grid, str(q_num),
+                                (row[0][0] - row[0][2] - 50, row[0][1] + 8),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                q_num += 1
+        self._add_step(
+            "Answer Grid (Hàng & ABCD)",
+            f"Phân hàng (cluster Y) và xác định vị trí A/B/C/D.\n"
+            f"Bỏ header row, giữ 30 hàng/cột.\n"
+            f"Tổng: {total_q} câu nhận diện.\n"
+            f"Màu: Đỏ=A, Xanh=B, Cam=C, Tím=D",
+            vis_grid)
+
+        # === BƯỚC 5: Crop & Clean & Grade ===
+        print(f"[5/6] Cắt ảnh và chấm Crop & Clean...")
+
+        answers = {}
+        question_images = {}
+        q_num = 1
+        
+        vis_thresh = image.copy()
+
+        for col_idx in sorted(grid.keys()):
+            for row in grid[col_idx]:
+                if q_num > NUM_QUESTIONS:
+                    break
+                
+                n = min(len(row), NUM_CHOICES)
+                if n < 3:
+                    answers[q_num] = None
+                    q_num += 1
+                    continue
+                
+                # Sắp xếp bubbles từ A -> D
+                row_sorted = sorted(row[:n], key=lambda c: c[0])
+                
+                # Bounding box của dòng này
+                min_x = int(min(c[0] - c[2] for c in row_sorted))
+                max_x = int(max(c[0] + c[2] for c in row_sorted))
+                min_y = int(min(c[1] - c[2] for c in row_sorted))
+                max_y = int(max(c[1] + c[2] for c in row_sorted))
+                
+                pad_x = 5
+                pad_y = 5
+                x1 = max(0, min_x - pad_x)
+                x2 = min(gray.shape[1], max_x + pad_x)
+                y1 = max(0, min_y - pad_y)
+                y2 = min(gray.shape[0], max_y + pad_y)
+                
+                crop = gray[y1:y2, x1:x2].copy()
+                if crop.size == 0:
+                    answers[q_num] = None
+                    q_num += 1
+                    continue
+                
+                r_avg = int(np.mean([c[2] for c in row_sorted]))
+
+                # --- 1. Xóa line ngang dọc ---
+                th_inv = cv2.adaptiveThreshold(
+                    crop, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                    cv2.THRESH_BINARY_INV, 21, 10
+                )
+                kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(15, r_avg * 2)))
+                v_lines = cv2.morphologyEx(th_inv, cv2.MORPH_OPEN, kernel_v)
+                kernel_h = cv2.getStructuringElement(cv2.MORPH_RECT, (max(15, r_avg * 2), 1))
+                h_lines = cv2.morphologyEx(th_inv, cv2.MORPH_OPEN, kernel_h)
+                line_mask = cv2.bitwise_or(v_lines, h_lines)
+                crop[line_mask > 0] = 255
+                
+                # --- 2. Xóa trắng 2 bên mép (nằm ngoài A và D) ---
+                crop_cx_A = int(row_sorted[0][0] - x1)
+                crop_cx_D = int(row_sorted[-1][0] - x1)
+                margin = int(r_avg * 1.2)
+                left_bound = max(0, crop_cx_A - margin)
+                crop[:, :left_bound] = 255
+                right_bound = min(crop.shape[1], crop_cx_D + margin)
+                crop[:, right_bound:] = 255
+                
+                # --- 3. Threshold lại ảnh đã clean ---
+                _, binary = cv2.threshold(crop, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                
+                # --- 4. Tính điểm mật độ pixel trên từng bubble ---
+                counts = []
+                for ci in range(n):
+                    cxc = int(row_sorted[ci][0] - x1)
+                    cyc = int(row_sorted[ci][1] - y1)
+                    r = int(row_sorted[ci][2])
+                    
+                    mask_inner = np.zeros(binary.shape, dtype="uint8")
+                    inner_r = max(int(r * 0.55), 3)
+                    cv2.circle(mask_inner, (cxc, cyc), inner_r, 255, -1)
+                    
+                    pixel_count = cv2.countNonZero(cv2.bitwise_and(binary, binary, mask=mask_inner))
+                    counts.append(pixel_count)
+                    
+                max_idx = np.argmax(counts)
+                max_val = counts[max_idx]
+                sorted_counts = sorted(counts, reverse=True)
+                gap = sorted_counts[0] - sorted_counts[1] if n > 1 else max_val
+                
+                area = np.pi * (max(int(r_avg * 0.55), 3) ** 2)
+                
+                # Ngưỡng: Cần ít nhất 20% pixel đen trong khuôn và cách đối thủ ít nhất 10%
+                if max_val > (area * 0.20) and gap > (area * 0.10):
+                    answer = CHOICE_LABELS[max_idx]
+                    answers[q_num] = answer
+                else:
+                    answer = None
+                    answers[q_num] = None
+                    
+                # Visualize on clean crop
+                vis_crop = cv2.cvtColor(crop, cv2.COLOR_GRAY2BGR)
+                for ci in range(n):
+                    cxc = int(row_sorted[ci][0] - x1)
+                    cyc = int(row_sorted[ci][1] - y1)
+                    r = int(row_sorted[ci][2])
+                    color = (0, 0, 255) if (answer and ci == CHOICE_LABELS.index(answer)) else (0, 200, 0)
+                    cv2.circle(vis_crop, (cxc, cyc), max(int(r * 0.55), 3), color, 2)
+                    
+                question_images[q_num] = {
+                    'image': vis_crop,
+                    'bbox': (x1, y1, x2, y2),
+                    'answer': answers[q_num],
+                    'circles': [(c[0]-x1, c[1]-y1, c[2]) for c in row_sorted]
+                }
+                
+                # Vẽ lên vis_thresh
+                for ci, (cx, cy, r) in enumerate(row[:NUM_CHOICES]):
+                    if answer and ci < len(CHOICE_LABELS) and CHOICE_LABELS[ci] == answer:
+                        cv2.circle(vis_thresh, (cx, cy), r + 5, (0, 0, 255), 3)
+                        cv2.circle(vis_thresh, (cx, cy), r, (0, 0, 255), -1)
+                    else:
+                        cv2.circle(vis_thresh, (cx, cy), r, (0, 200, 0), 1)
+                
+                label = f"{q_num}:{answer or '-'}"
+                cv2.putText(vis_thresh, label,
+                            (row[0][0] - row[0][2] - 70, row[0][1] + 8),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 200, 0), 1)
+                q_num += 1
+
+        n_answered = sum(1 for v in answers.values() if v is not None)
+        print(f"  -> {n_answered}/{len(answers)} câu có đáp án")
+
+        self._add_step(
+            "Threshold Grading (Crop & Clean)",
+            f"Điểm mật độ pixel sau morphology line removal.\n"
+            f"Kết quả: {n_answered}/{len(answers)} câu có đáp án",
+            vis_thresh)
+
+        # === BƯỚC 6: Bỏ qua vì đã sinh question_images ở trên ===
+
+        annotated = self._draw_annotated(image, grid, answers)
+        self._add_step(
+            "Kết quả Annotated",
+            f"Ảnh kết quả cuối cùng với vòng tròn đáp án\n"
+            f"và số thứ tự câu hỏi.",
+            annotated)
+
+        elapsed = time.time() - t0
+
+        stats = {
+            'total_circles': len(raw_circles),
+            'filtered_circles': len(good_circles),
+            'total_questions': NUM_QUESTIONS,
+            'detected_questions': total_q,
+            'answered': n_answered,
+            'unanswered': total_q - n_answered,
+            'processing_time': elapsed
+        }
+
+        self._print_results(answers, stats)
+        self._gray_clahe_cache = None
+
+        return {
+            'answers': answers,
+            'annotated': annotated,
+            'question_images': question_images,
+            'stats': stats,
+            'grid': grid,
+            'image_orig': image,
+            'step_images': list(self._step_images)
+        }
+
+
     def _detect_circles(self, gray):
         """Phát hiện toàn bộ vòng tròn bằng HoughCircles (2 lượt)."""
         # Dùng CLAHE đã cache để giảm chi phí tính toán.
@@ -1607,7 +1954,7 @@ class SmartOMR:
 # ENTRY POINT
 # ============================================================
 def run(image_path, debug=False, save=True, output_dir=None,
-        answer_key=None):
+        answer_key=None, grading_method='standard'):
     """API chạy nhanh cho 1 ảnh: nhận diện, chấm điểm, lưu output.
 
     Args:
@@ -1618,7 +1965,10 @@ def run(image_path, debug=False, save=True, output_dir=None,
         answer_key: File đáp án chuẩn để chấm điểm (nếu có).
     """
     omr = SmartOMR(debug=debug)
-    result = omr.process(image_path)
+    if grading_method == 'crop_clean':
+        result = omr.process_crop_clean(image_path)
+    else:
+        result = omr.process(image_path)
     if not result:
         return result
 
@@ -1653,9 +2003,11 @@ def run(image_path, debug=False, save=True, output_dir=None,
     # Luu anh tung cau
     q_dir = os.path.join(output_dir, f"{base}_questions")
     os.makedirs(q_dir, exist_ok=True)
-    for q_num, qd in result['question_images'].items():
-        ans = qd['answer'] if qd['answer'] else '_'
-        cv2.imwrite(os.path.join(q_dir, f"Q{q_num:03d}_{ans}.jpg"), qd['image'])
+    if 'question_images' in result:
+        for q_num, qd in result['question_images'].items():
+            ans = qd['answer'] if qd.get('answer') else '_'
+            cv2.imwrite(os.path.join(q_dir, f"Q{q_num:03d}_{ans}.jpg"), qd['image'])
+    result['q_dir'] = q_dir
 
     # Luu file dap an nhan dien
     txt_path = os.path.join(output_dir, f"{base}_answers.txt")
