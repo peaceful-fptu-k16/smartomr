@@ -1487,40 +1487,48 @@ class QuestionGalleryDialog(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         
         def _on_mousewheel(event):
-            # Roll mouse wheel to scroll horizontally
-            canvas.xview_scroll(int(-1*(event.delta/120)), "units")
-            
+            # Use vertical scroll for wrapped grid
+            canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
         # Bind only to this window
         self.bind("<Enter>", lambda _: self.bind_all("<MouseWheel>", _on_mousewheel))
         self.bind("<Leave>", lambda _: self.unbind_all("<MouseWheel>"))
 
         import cv2
         from PIL import Image, ImageTk
-        self.images = [] 
-        
-        row_frame = tk.Frame(scrollable_frame, bg=T.BG)
-        row_frame.pack(fill="y", expand=True, padx=10, pady=20)
-        
-        for q_num in sorted(q_dict.keys()):
-            box = tk.Frame(row_frame, bg=T.SURFACE, bd=1, relief="solid")
-            box.pack(side="left", padx=10, pady=5)
-            
+        self.images = []
+
+        # Use a wrapping grid so images form multiple rows instead of one long row
+        wrap_count = 6
+        grid_frame = tk.Frame(scrollable_frame, bg=T.BG)
+        grid_frame.pack(fill="both", expand=True, padx=10, pady=20)
+
+        for idx, q_num in enumerate(sorted(q_dict.keys())):
+            r = idx // wrap_count
+            c = idx % wrap_count
+            box = tk.Frame(grid_frame, bg=T.SURFACE, bd=1, relief="solid")
+            box.grid(row=r * 2, column=c, padx=10, pady=5, sticky="n")
+
             ans = q_dict[q_num].get('answer') or "_"
             tk.Label(box, text=f"Câu {q_num}: {ans}", bg=T.SURFACE, fg=T.FG, font=T.BODY).pack(pady=(5,0))
-            
+
             bgr = q_dict[q_num]['image']
             rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
             pil_img = Image.fromarray(rgb)
-            
-            # Phóng to một chút để xem rõ hơn trên dải ngang
+
+            # Phóng to một chút để xem rõ hơn
             if pil_img.width < 150:
                 scale = 150 / pil_img.width
                 pil_img = pil_img.resize((int(pil_img.width * scale), int(pil_img.height * scale)), Image.LANCZOS)
-            
+
             tk_img = ImageTk.PhotoImage(pil_img)
             self.images.append(tk_img)
             lbl_img = tk.Label(box, image=tk_img, bg=T.SURFACE)
             lbl_img.pack(padx=10, pady=10)
+
+        # Ensure columns expand evenly
+        for col in range(wrap_count):
+            grid_frame.grid_columnconfigure(col, weight=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

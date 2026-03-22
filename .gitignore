@@ -28,13 +28,6 @@ output/
 # Training data (large dataset)
 training_data/
 
-# Input images (user-specific)
-input/*.jpg
-input/*.jpeg
-input/*.png
-input/*.bmp
-!input/.gitkeep
-
 # Diagnostic / temporary scripts
 _diag*.py
 
